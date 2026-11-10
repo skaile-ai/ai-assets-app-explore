@@ -3,7 +3,9 @@
 //   const features = cfg.resolveFeatures(await cfg.readRubric(), { with: 'saliency', without: ['seq'], personas: 2 });
 //   const f = await cfg.features(dataDir);                  // later steps: the run's switches, from run.json only
 // Model calls go through `meter`: the role comes from rubric.json `models`, the count lands in run.json `models`.
+// Agents (walker, critic) run on the model of their own definition; `recordAgent` reads it from there.
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeRun } from './crawl.mjs';
@@ -106,8 +108,8 @@ export function meter(dataDir, rubric) {
         return items;
       } finally { add(kind, role, calls, (Date.now() - t) / 1000, cost); }
     },
-    /** Count calls made outside this kernel (agents) under call kind `kind`; flushed like the others. */
-    record(kind, calls, secs) { add(kind, roleOf(kind), calls, secs); },
+    /** Count calls made outside this kernel (agents) under call kind `kind` and model `role`; flushed like the others. */
+    record(kind, calls, secs, role) { add(kind, role, calls, secs); },
     /** Add this meter's counts into run.json `models` and reset them. */
     async flush() {
       const done = Object.entries(acc);
@@ -128,13 +130,34 @@ export function meter(dataDir, rubric) {
   };
 }
 
+/** The agent each agent call kind dispatches, by bare name (the eval kernel's `agent()` takes no model override). */
+export const AGENTS = { walker_agent: 'app-explore-walker', critic: 'app-explore-critic' };
+
 /**
- * Count agent runs into run.json `models[kind]` like `meter` counts kernel calls: `kind` is a key of rubric.json
- * `models` (`walker_agent`, `critic`), `calls` the agents run, `secs` their wall time. SKILL.md step 8 calls it after
- * each wave of agents, so the per-kind comparison includes them.
+ * The model role an omp agent runs on: the `model:` line of its definition's frontmatter (`@task_standard` →
+ * `task_standard`), looked up where omp discovers agents (`<cwd>/.omp/agents`, then `~/.omp/agent/agents`).
+ * null when no definition is found there.
+ */
+export async function agentRole(name) {
+  for (const dir of [join(process.cwd(), '.omp', 'agents'), join(homedir(), '.omp', 'agent', 'agents')]) {
+    let text;
+    try { text = await readFile(join(dir, `${name}.md`), 'utf8'); } catch { continue; }
+    const fm = text.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
+    const m = fm.match(/^model:\s*["']?([^"'\n]+?)["']?\s*$/m);
+    return m ? m[1].replace(/^@/, '') : null;
+  }
+  return null;
+}
+
+/**
+ * Count agent runs into run.json `models[kind]` like `meter` counts kernel calls: `kind` is a key of `AGENTS`
+ * (`walker_agent`, `critic`), `calls` the agents run, `secs` their wall time. The recorded `role` is the agent
+ * definition's model (`agentRole`), not a rubric.json key. SKILL.md steps 5, 6 and 8 call it after each wave.
  */
 export async function recordAgent(dataDir, kind, { calls = 1, secs = 0 } = {}) {
+  const name = AGENTS[kind];
+  if (!name) throw new Error(`app-explore: recordAgent kind "${kind}"; valid: ${Object.keys(AGENTS).join(', ')}`);
   const mt = meter(dataDir, await readRubric());
-  mt.record(kind, calls, secs);
+  mt.record(kind, calls, secs, await agentRole(name));
   await mt.flush();
 }

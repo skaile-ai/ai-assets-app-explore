@@ -358,11 +358,28 @@ export async function openGuarded(browser, { url, dataDir, mode = 'readonly', al
   return { tab, saved };
 }
 
+const SHOT_PROBE_MS = 15_000;
+
+/**
+ * One screenshot of the loaded page within `ms`; throws when it does not return in time (the display is asleep or
+ * the browser is wedged, and every later screenshot would stall the crawl the same way).
+ */
+export async function probeShot(tab, { ms = SHOT_PROBE_MS } = {}) {
+  let timer;
+  const stall = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(
+      `app-explore: screenshots stall (none within ${ms / 1000} s): display asleep or browser wedged; wake the display (\`caffeinate -u\`) and retry`)), ms);
+  });
+  try { await Promise.race([tab.screenshot({ silent: true, format: 'png' }), stall]); } finally { clearTimeout(timer); }
+}
+
 /**
  * openGuarded() for the crawl, plus the login: on a login wall, export the session from the user's Chrome (relay
  * tab → <data>/auth.json → loadState). Returns {tab, lang, auth: 'none'|'saved'|'relay'|'manual', login}.
  * `login: true` means the relay had no session either: the tab is reopened headed (guard installed again) and the
  * caller must ask the user to sign in there, then call waitLogin().
+ * Before it returns, probeShot() checks that the tab can take a screenshot, so a stalled display fails here, before
+ * the crawl records any state.
  */
 export async function openApp(browser, { url, dataDir, mode = 'readonly', allowPost = [], name = 'explore', viewport = VIEWPORT } = {}) {
   const opts = { url, dataDir, mode, allowPost, name, viewport };
@@ -383,9 +400,11 @@ export async function openApp(browser, { url, dataDir, mode = 'readonly', allowP
     if (await isLogin(tab)) {
       await browser.close({ name });
       ({ tab } = await openGuarded(browser, { ...opts, headed: true }));
+      await probeShot(tab);
       return { tab, lang: await langOf(tab), auth: 'manual', login: true };
     }
   }
+  await probeShot(tab);
   return { tab, lang: await langOf(tab), auth, login: false };
 }
 

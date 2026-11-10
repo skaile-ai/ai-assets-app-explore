@@ -324,8 +324,10 @@ class Run:
 
     def object_labels(self):
         """{object id: distinct labels} after the judge's synonym checks (synonyms.json, written by pipeline.mjs): an
-        alias judged a different thing is dropped, a screen label judged the same joins, and two objects judged one
-        thing share their labels (the first in model order carries the finding). Undecided pairs go to needs_check."""
+        alias joins only when the judge decided it names the same thing (judged different or undecided: dropped), a
+        screen label judged the same joins, and two objects judged one thing share their labels (the first in model
+        order carries the finding). Undecided pairs go to needs_check and never into a naming finding. A pair without
+        an answer (judge unavailable) keeps the model's word."""
         objs = {o["id"]: o for o in self.model["objects"]}
         labels = {i: distinct_labels(o) for i, o in objs.items()}
         root = {i: i for i in objs}
@@ -341,6 +343,8 @@ class Run:
             if not y.get("answer") or oid not in objs:
                 continue
             decided, same, leaning, conf = gated(y["answer"], "bool", self.gate)
+            if y.get("kind") == "alias" and not (decided and same):
+                labels[oid] = [x for x in labels[oid] if not same_word(x, y["b"])]
             if not decided:
                 homes = objs[oid].get("homes") or [self.entry]
                 self.needs.append({"state": homes[0], "source": "naming", "question": "synonym", "answer": y,
@@ -348,9 +352,7 @@ class Run:
                                    "text": f"\"{y['a']}\" and \"{y['b']}\" the same thing? Leaning: {leaning} "
                                            f"(p {round(conf, 2)}), outside the confidence gate."})
                 continue
-            if y.get("kind") == "alias" and not same:
-                labels[oid] = [x for x in labels[oid] if not same_word(x, y["b"])]
-            elif y.get("kind") == "label" and same and not any(same_word(x, y["b"]) for x in labels[oid]):
+            if y.get("kind") == "label" and same and not any(same_word(x, y["b"]) for x in labels[oid]):
                 labels[oid].append(y["b"])
             elif y.get("kind") == "objects" and same and y.get("other") in objs:
                 a, b = sorted((find(oid), find(y["other"])), key=order.index)
@@ -617,8 +619,9 @@ class Run:
         """M-expectation per violation of mentalmodel.json (pipeline.mjs `mentalModel`), on the state the click led to
         (a walk step off the crawled graph: the task's target, else the entry; the text names the URL), one finding
         per state and violation kind. A naming violation whose two names the naming rule already holds as one object's
-        labels, or that the synonym check judged two different things, is that check's call and adds nothing. Crawl
-        matches outside the gate go to needs_check, and so do the violations the update logged on such a step."""
+        labels, that the synonym check left undecided (needs_check), or that it judged two different things, is that
+        check's call and adds nothing. Crawl matches outside the gate go to needs_check, and so do the violations the
+        update logged on such a step."""
         if not self.features.get("mental_model"):
             return
         mm = load(self.data / "mentalmodel.json")
@@ -667,20 +670,18 @@ class Run:
                      **({"tasks": [task]} if task in tasks else {}))
 
     def mental_naming_known(self, v):
-        """The naming rule already holds both names as one object's labels, or the synonym check judged the pair two
-        different things (same-object-different-name only)."""
+        """The naming rule already holds both names as one object's labels, the synonym check left the pair undecided
+        (it is in needs_check), or judged it two different things (same-object-different-name only)."""
         a, b = (v.get("names") or [None, None])[:2]
         if not a or not b:
             return True
         if any(any(same_word(a, x) for x in labels) and any(same_word(b, x) for x in labels) for labels in self.labels.values()):
             return True
-        if v.get("naming") != "same-object-different-name":
-            return False
         for y in self.synonyms:
             pair = (y.get("a"), y.get("b"))
             if y.get("answer") and ((same_word(a, pair[0]) and same_word(b, pair[1])) or (same_word(a, pair[1]) and same_word(b, pair[0]))):
                 decided, same, _, _ = gated(y["answer"], "bool", self.gate)
-                if decided and not same:
+                if not decided or (not same and v.get("naming") == "same-object-different-name"):
                     return True
         return False
 

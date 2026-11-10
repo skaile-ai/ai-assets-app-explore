@@ -64,8 +64,9 @@ Each feature that is on adds work to the steps below; its details live in its re
 
 `run.json.features` is the run's only record of the switches: every later step reads it (`await cfg.features(dataDir)`), never the arguments. A switch whose step does not read it has no effect, and a feature that is off writes no file and adds no finding.
 
-Every model call takes its role from `rubric.json` `models`, one role per call kind: `judge` (the cheap judge, `judgeBatch`) for bool, choice and score questions; `smol` for extraction, short generation and kernel walks; `slow` only for synthesis and the critic. The agents of steps 5, 6 and 8 are dispatched as `<agent>@<role>` with their role from `models` (`walker_agent`, `critic`). Change a role there, never in code.
-Each call is counted into `run.json.models[<kind>]` = `{role, calls, secs}` (plus `cost` when the judge reports one), summed across cells; agent runs are recorded with `cfg.recordAgent(dataDir, kind, { calls, secs })`.
+Every kernel model call takes its role from `rubric.json` `models`, one role per call kind: `judge` (the cheap judge, `judgeBatch`) for bool, choice and score questions; `smol` for extraction, short generation and kernel walks; `slow` only for synthesis. Change a role there, never in code.
+The agents of steps 5, 6 and 8 (`app-explore-walker`, `app-explore-critic`) are dispatched by their bare name: the eval kernel's `agent()` takes no model override and rejects an `<agent>@<role>` pin. Each runs on the model of its own definition (`model:` in its frontmatter); change it there.
+Each call is counted into `run.json.models[<kind>]` = `{role, calls, secs}` (plus `cost` when the judge reports one), summed across cells; agent runs are recorded with `cfg.recordAgent(dataDir, kind, { calls, secs })` (kind `walker_agent` or `critic`), which reads `role` from the agent's definition.
 Only judge kinds report a cost: a kind without `cost` (`smol`, `slow` and agent kinds) is "cost not reported" wherever the run's cost is named, never 0.
 
 Files of the run, all under the reports dir: `<stem>.data/` (every data file), `<stem>.media/` (screenshots), later `<stem>.json`, `<stem>.choice.json`, `<stem>.html`. Write `run.json` now:
@@ -86,6 +87,7 @@ const o = await ax.openApp(browser, { url, dataDir, mode });   // tab "explore",
 `openApp` then detects a login wall (URL path contains login/signin/sign-in/auth, or a visible password field) and borrows the session from the user's Chrome: it opens the URL in a relay tab, exports cookies and storage to `auth.json` with `saveState`, closes the relay tab, loads the state into the guarded managed tab and navigates again. The user's Chrome only ever serves this export; the crawl runs in the managed tab.
 
 `o.login === true` means the user's Chrome has no session either: `openApp` reopened the tab headed. Tell the user in one chat line to sign in in the browser window that just opened, then run `await ax.waitLogin(o.tab, { dataDir })`, which waits until the login wall is gone and saves `auth.json`. Write the language: `await ax.writeRun(dataDir, { lang: o.lang, auth: o.auth })` (`de` when `<html lang>` starts with `de`, else `en`).
+Before it returns, `openApp` takes one screenshot with a 15 s limit. When it throws `screenshots stall`, the display is asleep or the browser is wedged and the crawl would hang on its first state: run `caffeinate -u` (wakes the display), then repeat this step with the same stem; no state has been recorded yet.
 
 `auth.json` holds live session cookies: it stays inside `<stem>.data/` and never goes into a commit, a report or a chat message.
 
@@ -176,7 +178,7 @@ Two things run in parallel per state. The cheap judge answers the rubric questio
 
 `p.failed.judge` or `p.failed.extract` non-empty: run `perceive` once more (it rewrites every state). `p.judge_error` set means no image-capable judge exists on this machine and `run.json.perception` is `pending`; then the critic agents answer instead:
 
-1. Split the state ids into batches of 10. Per batch one ``agent(prompt, { agent: `app-explore-critic@${rubric.models.critic}` })``, all in parallel, and afterwards `await cfg.recordAgent(dataDir, 'critic', { calls: <batches>, secs: <wall seconds> })`.
+1. Split the state ids into batches of 10. Per batch one `agent(prompt, { agent: 'app-explore-critic' })`, all in parallel, and afterwards `await cfg.recordAgent(dataDir, 'critic', { calls: <batches>, secs: <wall seconds> })`.
    Prompt: read `rubric.json` `questions`; for each listed state read `<stem>.media/<id>.som.png`; answer every question in the judge's answer shape (`choice` → `{choice, probabilities: {label: p}, confidence}`, `bool` → `{bool: P(yes)}`, `score` → `{score, probabilities: {"0": p, …}, confidence}` with `score` the probability-weighted level), stating honest probabilities; write `{<id>: {<question id>: answer}}` to `<stem>.data/perceive.agent/<batch>.json`; return only the file path.
 2. `const missing = await ap.mergeAgentAnswers({ dataDir })` merges them and sets `perception: "agent"`; re-run the batches holding `missing` ids.
 
@@ -200,14 +202,15 @@ With `since`, `synthesize` reads the previous `model.json` and `graph.json` from
 A previous task without such a match gets `target_state: null` and `target_missing: true`, so step 8 walks it and it fails visibly. `model.json` `kept` = `{ids, missing}` (the previous task ids, and those without a target); `synthesize` returns the same `kept`.
 
 `synonyms` lets the cheap judge check what the naming rule would otherwise take on the slow model's word: per candidate pair "do both labels name the same thing?" (rubric.json `synonyms`, gated like every bool). Candidates, capped at `synonyms.max_pairs`: each object's name against each of its `aliases`, object names that share a word, and object names the per-screen extraction used that are no model name or alias against the object names they share a word with.
-`<stem>.data/synonyms.json` lists the pairs with their `answer`; `analyze.py` drops an alias judged a different thing, adds a screen label judged the same, and merges two objects judged one thing into one naming finding; undecided pairs go to `needs_check.json`. `y.judge_error` set: the judge is unavailable, every answer is null and naming rests on the model alone; go on.
+`<stem>.data/synonyms.json` lists the pairs with their `answer`; `analyze.py` keeps an alias only when the judge decided it names the same thing, adds a screen label judged the same, and merges two objects judged one thing into one naming finding.
+An undecided pair (answer outside the gate) changes nothing and makes no finding: its alias is dropped like one judged different, its label does not join, its objects stay apart, and the pair goes to `needs_check.json` for a person to decide. `y.judge_error` set: the judge is unavailable, every answer is null and naming rests on the model alone; go on.
 
 `scent` asks the judge, per task, which numbered mark on the entry state (the crawl's first state) the persona would click first, and compares it with the first edge of every shortest click path from there to the task's `target_state`. `<stem>.data/scent.json` per task: `predicted_mark`, `p`, `shortest_first_mark`, `first_marks`, `first_labels`, `clicks`, `correct` (`null` when the target is the entry itself, unreachable or `null`, or the judge gave no answer; `false` when the path's first control carries no mark on the entry screenshot, e.g. below the fold).
 
 `pathScent` (feature `scent_path`) checks every state along each task's shortest path: [references/scent-path.md](references/scent-path.md).
 
 - `m.objects < 3`: the crawl saw too little of the app; go back to step 4 with a higher budget.
-- `scent` throws `judge unavailable`: one `app-explore-critic@${rubric.models.critic}` agent reads `scent.questions.json` and its `image`, answers `first_click` per task in the judge choice shape into `<stem>.data/scent.agent.json`; count it with `cfg.recordAgent(dataDir, 'critic', { secs })`.
+- `scent` throws `judge unavailable`: one `app-explore-critic` agent reads `scent.questions.json` and its `image`, answers `first_click` per task in the judge choice shape into `<stem>.data/scent.agent.json`; count it with `cfg.recordAgent(dataDir, 'critic', { secs })`.
   Then `await ap.scent({ judgeBatch }, { dataDir, answers: JSON.parse(await Bun.file(`${dataDir}/scent.agent.json`).text()) })`.
 
 **Done when** `model.json` has ≥ 3 objects, each with a `homes` state in `graph.json`, every task's `target_state` exists in `graph.json` (with since: or is `null` with `target_missing`), `synonyms.json` exists, `scent.json` has one entry per task, `run.json.models` has `calls` for `perceive_judge`, `extract`, `synthesize`, `synonyms` (when it had pairs) and `scent` (when the judge answered), and each feature that is on met its step-6 criterion in its reference.
@@ -243,7 +246,7 @@ Run it again after every later step that adds walks or critique; it rewrites all
 ## 8. Walks and critique
 
 Two kinds of evidence a screenshot cannot give: does a person reach the goal, and what does a careful reviewer see that the closed questions missed. Each task of `model.json` becomes a **walk**: an `app-explore-walker` agent plays the task's persona in its own hidden tab, thinks aloud before every click, and writes `walks/<task id>.json`. Then one `app-explore-critic` agent reviews the eight lowest-clarity screens against Nielsen's heuristics and writes `critique/c1.json`.
-Both agents run on their `rubric.json` `models` role (`walker_agent`, `critic`) and know their file formats; the prompts only carry the brief. Everything this step runs in the kernel uses the cheap roles (kernel walks: `walk_step`, `walk_survey`).
+Both agents run on the model of their own definition and know their file formats; the prompts only carry the brief. Everything this step runs in the kernel uses the cheap roles (kernel walks: `walk_step`, `walk_survey`).
 
 Walks run in waves with a barrier per wave, as many per wave as rubric.json `personas.walk_concurrency` allows: `local` for a local dev server (host `localhost` or `127.0.0.1`: every walker's full page load competes for the same dev server, and an unbundled one serves ~1500 modules per load), else `remote`.
 The walker gets the task's title, never its `target_state`: it must find the way like a user. With `since`, `model.tasks` already holds every previous task id plus the new ones (step 6), those whose screen is gone included, so the loop re-walks all of them; their results land in `diff.json.tasks` as `{prev, now}` after the re-run of `analyze.py`.
@@ -269,7 +272,7 @@ const brief = (t) => [
   `url: ${run.url}`, `mode: ${run.mode}`, `dataDir: ${dataDir}`, `helpers: ${helpers}`,
 ].join('\n');
 const answers = {};
-const walker = `app-explore-walker@${rubric.models.walker_agent}`;
+const walker = 'app-explore-walker';
 const perWave = rubric.personas.walk_concurrency[/^(localhost|127\.0\.0\.1)$/.test(new URL(run.url).hostname) ? 'local' : 'remote'];
 for (let i = 0; i < model.tasks.length; i += perWave) {
   const wave = model.tasks.slice(i, i + perWave);
@@ -299,7 +302,7 @@ Critique: the eight states with the lowest clarity in `scores.json` (from step 7
 const scores = JSON.parse(await Bun.file(`${dataDir}/scores.json`).text());
 const worst = Object.entries(scores.screens).sort((a, b) => a[1] - b[1]).slice(0, 8).map(([id]) => id);
 const tc = Date.now();
-const critic = await agent(await ap.criticBrief({ dataDir, states: worst, batch: 'c1' }), { agent: `app-explore-critic@${rubric.models.critic}`, label: 'critic-c1' });
+const critic = await agent(await ap.criticBrief({ dataDir, states: worst, batch: 'c1' }), { agent: 'app-explore-critic', label: 'critic-c1' });
 await critic.wait();
 await cfg.recordAgent(dataDir, 'critic', { calls: 1, secs: (Date.now() - tc) / 1000 });
 ```
@@ -318,7 +321,7 @@ Read the walk answers as they come back:
 
 - `walks/` has one file per task in `model.json` (each with `steps`, `success`, `clicks`, `survey`), no `W-failed`/`W-struggle` finding rests on a walk whose think-aloud blames loading, and every guard-blocked walk is in `needs_check.json`, not in a `W-*` finding;
 - `critique/c1.json` is a JSON array of findings with `state`, `rule` `C-1`…`C-10`, `sev`, `marks` and `confidence`;
-- `run.json.models` has `calls` for `walker_agent` and `critic`;
+- `run.json.models` has `calls` for `walker_agent` and `critic`, each with the `role` of its agent's definition;
 - the re-run `findings.json` contains `W-*`, `S-scent` or `C-*` findings where the walks and critique gave reason;
 - each feature that is on met its step-8 criterion in its reference;
 - `leaks.jsonl` is empty in readonly mode, and every tab this step opened in this kernel is closed;

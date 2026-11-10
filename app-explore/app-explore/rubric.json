@@ -15,8 +15,6 @@
     "scent": "judge",
     "walk_step": "smol",
     "walk_survey": "smol",
-    "walker_agent": "task_standard",
-    "critic": "slow",
     "mental_predict": "smol",
     "mental_match": "judge",
     "mental_update": "smol",
