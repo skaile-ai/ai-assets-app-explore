@@ -11,11 +11,11 @@ metadata:
   requires: "report"
 ---
 
-# app-explore <url> [sandbox] [since <path>|since auto] [budget <n>]
+# app-explore <url> [sandbox] [since <path>|since auto] [budget <n>] [with <f,…>] [without <f,…>] [personas <n>]
 
 You explore a running web app the way a first-time user would, without its source code: a hidden browser crawls every reachable **state** (a page, or a dialog, menu or tab panel opened by a click), each state gets a screenshot plus a Set-of-Mark screenshot where every interactive element carries a numbered **mark**, and the run ends in a static HTML report built with the `report` skill. Needs `@skaile-ai/report` ≥ 0.6.0 (gallery block, `app-audit` profile) and, for the walk and critique steps, the agents `app-explore-walker` and `app-explore-critic`.
 
-The browser and model work lives in `crawl.mjs`, `pipeline.mjs` and `walk.mjs` beside this file. Resolve this skill's directory once (omp deploys skills under `~/.agents/skills/` or `~/.omp/agent/skills/`) and import from it in a JavaScript `eval` cell; the functions take the tab (or the eval `browser`, `judgeBatch`, `completion`) as arguments:
+The browser and model work lives in `crawl.mjs`, `pipeline.mjs` and `walk.mjs` beside this file, the feature switches and model roles in `config.mjs`. Resolve this skill's directory once (omp deploys skills under `~/.agents/skills/` or `~/.omp/agent/skills/`) and import from it in a JavaScript `eval` cell; the functions take the tab (or the eval `browser`, `judgeBatch`, `completion`) as arguments:
 
 ```js
 const { existsSync } = await import('node:fs');
@@ -30,7 +30,7 @@ The app's data is someone's real data. The run is **readonly** by default: a wri
 
 ## 1. Arguments and stem
 
-Parse `app-explore <url> [sandbox] [since <path>|since auto] [budget <n>]`:
+Parse `app-explore <url> [sandbox] [since <path>|since auto] [budget <n>] [with <f,…>] [without <f,…>] [personas <n>]`:
 
 - `mode`: `sandbox` when the word is present, else `readonly`.
 - Reports dir: `<repo>/.scratch/reports/` with repo = `git rev-parse --show-toplevel` of the cwd, else `~/.scratch/reports/`.
@@ -42,13 +42,33 @@ Parse `app-explore <url> [sandbox] [since <path>|since auto] [budget <n>]`:
 const budgets = { states: budget ?? 60, depth: 5, perRoute: 2, actions: 25, minutes: 20 };
 ```
 
+- `with <f,…>` / `without <f,…>` switch the features below on or off (comma list of names); `personas <n>` sets how many personas walk each task. Resolve them against the defaults in `rubric.json` `features`; an unknown name or a bad `personas` throws with the valid names: stop and show the user that message.
+
+```js
+const cfg = await import(`${helpers}/config.mjs`);
+const features = cfg.resolveFeatures(await cfg.readRubric(), { with: withList, without: withoutList, personas });   // absent: [], [], undefined
+```
+
+|Feature|Default|Gates|Cost|
+|---|---|---|---|
+|`examples`|on|step 8 critic: four example critiques matched to the screen type; every critic finding carries a box or marks|longer critic prompt, no extra call|
+|`seq`|on|step 8 walks: SEQ 1-7 per step and the 10 SUS items after the task; `W-friction` findings, SUS in the report|no extra call|
+|`personas <n>`|3|step 8: per task one walker agent plus `n-1` kernel walks with persona variants|`n-1` × tasks × up to 16 `smol` calls|
+|`scent_path`|on|step 6 scent: every state along each task's shortest path, marks in reading order in chunks of 8; `S-premature` findings|one judge call per path state and chunk|
+|`mental_model`|on|steps 6 and 8: a first-time user's model grown along crawl edges and walks; `M-expectation` findings|per crawl edge one `smol` prediction, one judge match, one `smol` update|
+|`saliency`|off|step 7: a local saliency model scores each screenshot; `R-salience` findings, heatmap overlay in the gallery|local CPU model, must be installed|
+
+`run.json.features` is the run's only record of the switches: every later step reads it (`await cfg.features(dataDir)`), never the arguments. A switch whose step does not read it has no effect, and a feature that is off writes no file and adds no finding.
+
+Every model call takes its role from `rubric.json` `models`, one role per call kind: `judge` (the cheap judge, `judgeBatch`) for bool, choice and score questions; `smol` for extraction, short generation and kernel walks; `slow` only for synthesis and the critic. Change a role there, never in code. Each call is counted into `run.json.models[<kind>]` = `{role, calls, secs}` (plus `cost` when the judge reports one), summed across cells.
+
 Files of the run, all under the reports dir: `<stem>.data/` (every data file), `<stem>.media/` (screenshots), later `<stem>.json`, `<stem>.choice.json`, `<stem>.html`. Write `run.json` now:
 
 ```js
-await ax.writeRun(dataDir, { url, started: new Date().toISOString(), mode, since, budgets, viewport: { width: 1280, height: 800 } });
+await ax.writeRun(dataDir, { url, started: new Date().toISOString(), mode, since, budgets, features, viewport: { width: 1280, height: 800 } });
 ```
 
-**Done when** `<stem>.data/run.json` exists with `url`, `started`, `mode`, `since` and `budgets`, and a non-null `since` names an existing previous `.data/` dir with `graph.json`.
+**Done when** `<stem>.data/run.json` exists with `url`, `started`, `mode`, `since`, `budgets` and `features` (every key of `rubric.json` `features`), and a non-null `since` names an existing previous `.data/` dir with `graph.json`.
 
 ## 2. Open the app and get past the login
 
@@ -168,7 +188,7 @@ With `since`, `synthesize` reads the previous `model.json` and `graph.json` from
 - `m.objects < 3`: the crawl saw too little of the app; go back to step 4 with a higher budget.
 - `scent` throws `judge unavailable`: one `app-explore-critic` agent reads `scent.questions.json` and its `image`, answers `first_click` per task in the judge choice shape into `<stem>.data/scent.agent.json`; then `await ap.scent({ judgeBatch }, { dataDir, answers: JSON.parse(await Bun.file(`${dataDir}/scent.agent.json`).text()) })`.
 
-**Done when** `model.json` has ≥ 3 objects, each with a `homes` state in `graph.json`, every task's `target_state` exists in `graph.json` (with since: or is `null` with `target_missing`), `synonyms.json` exists, and `scent.json` has one entry per task.
+**Done when** `model.json` has ≥ 3 objects, each with a `homes` state in `graph.json`, every task's `target_state` exists in `graph.json` (with since: or is `null` with `target_missing`), `synonyms.json` exists, `scent.json` has one entry per task, and `run.json.models` has `calls` for `perceive_judge`, `extract`, `synthesize`, `synonyms` (when it had pairs) and `scent` (when the judge answered).
 
 ## 7. Findings and scores
 
@@ -192,7 +212,7 @@ Run it again after every later step that adds walks or critique; it rewrites all
 
 ## 8. Walks and critique
 
-Two kinds of evidence a screenshot cannot give: does a person reach the goal, and what does a careful reviewer see that the closed questions missed. Each task of `model.json` becomes a **walk**: an `app-explore-walker` agent plays the task's persona in its own hidden tab, thinks aloud before every click, and writes `walks/<task id>.json`. Then one `app-explore-critic` agent reviews the eight lowest-clarity screens against Nielsen's heuristics and writes `critique/c1.json`. Each agent's model comes from its agent definition (walker `@task_standard`, critic `@slow`); the `task` calls pass none. Both agents know their file formats; the prompts only carry the brief.
+Two kinds of evidence a screenshot cannot give: does a person reach the goal, and what does a careful reviewer see that the closed questions missed. Each task of `model.json` becomes a **walk**: an `app-explore-walker` agent plays the task's persona in its own hidden tab, thinks aloud before every click, and writes `walks/<task id>.json`. Then one `app-explore-critic` agent reviews the eight lowest-clarity screens against Nielsen's heuristics and writes `critique/c1.json`. Each agent's model comes from its agent definition (walker `@task_standard`, critic `@slow`); the `task` calls pass none. Everything this step runs in the kernel uses the cheap roles of `rubric.json` `models` (kernel walks: `walk_step`, `walk_survey` on `smol`). Both agents know their file formats; the prompts only carry the brief.
 
 Walks run in waves with a barrier per wave: at most 2 at a time when the app is a local dev server (host `localhost` or `127.0.0.1`: every walker's full page load competes for the same dev server, and an unbundled one serves ~1500 modules per load), else 4. The walker gets the task's title, never its `target_state`: it must find the way like a user. With `since`, `model.tasks` already holds every previous task id plus the new ones (step 6), those whose screen is gone included, so the loop re-walks all of them; their results land in `diff.json.tasks` as `{prev, now}` after the re-run of `analyze.py`.
 
@@ -215,7 +235,7 @@ for (let i = 0; i < model.tasks.length; i += perWave) {
 }
 ```
 
-A walker that answers `browser unavailable` (its eval kernel has no `browser`), or one that failed and left no `walks/<id>.json`, is re-run in this kernel, one task after the other. `walk.mjs` drives the same tab with one `smol` completion per step over the mark list and the visible text, with the same 15-step limit, deny-list and write guard, and writes the same file (with `by: "kernel"`):
+A walker that answers `browser unavailable` (its eval kernel has no `browser`), or one that failed and left no `walks/<id>.json`, is re-run in this kernel, one task after the other. `walk.mjs` drives the same tab with one completion per step (role `walk_step`) over the mark list and the visible text, with the same 15-step limit, deny-list and write guard, and writes the same file (with `by: "kernel"`):
 
 ```js
 const wk = await import(`${helpers}/walk.mjs`);

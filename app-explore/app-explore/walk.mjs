@@ -1,10 +1,14 @@
 // Parent-kernel fallback walk for app-explore, used when `browser` is unavailable inside an app-explore-walker agent.
-// Writes the same <data>/walks/<task>.json as the agent (plus `by: "kernel"`), driven by one smol completion per step
-// over the mark list and visible text. Same limits: 15 steps, deny-list, write guard, acting stamp before each click.
+// Writes the same <data>/walks/<task>.json as the agent (plus `by: "kernel"`), driven by one completion per step
+// over the mark list and visible text (roles: rubric.json models `walk_step`, `walk_survey`; counted in run.json
+// `models`). Same limits: 15 steps, deny-list, write guard, acting stamp before each click.
 //   const wk = await import(`${helpers}/walk.mjs`);
 //   await wk.walkInKernel({ ax, browser, completion, persona, task, url, mode, dataDir });
+import { mkdir, writeFile } from 'node:fs/promises';
+import { meter, readRubric } from './config.mjs';
+
 export async function walkInKernel({ ax, browser, completion, persona, task, url, mode, dataDir }) {
-  const { mkdir, writeFile } = await import('node:fs/promises');
+  const mt = meter(dataDir, await readRubric());
   const name = `walk-${task.id}`;
   const STEP = {
     type: 'object', additionalProperties: false,
@@ -39,11 +43,11 @@ export async function walkInKernel({ ax, browser, completion, persona, task, url
       const last = steps[steps.length - 1];
       const lastLine = last ? `Your LAST action: clicked ${last.mark} "${last.label}", expecting: ${last.expected}. Compare with the screen below.`
         : 'This is your first look; there was no last action.';
-      const r = await (await completion(
+      const r = await mt.complete(completion, 'walk_step',
         `You are ${persona.name} (${persona.goal}). Your task: ${task.title}.\n${rule}\n` +
         `Use only what the screen shows.\nYour steps so far:\n${past}\n${lastLine}\n\nScreen ${here}\nVisible text: ${text}\n\n` +
         `Clickable elements (mark: role "label"):\n${m.map((x) => `${x.n}: ${x.role} "${x.label}"`).join('\n')}`,
-        { model: 'smol', schema: STEP })).wait();
+        { schema: STEP });
       if (last) {
         const o = String(r.last_outcome || '');
         last.outcome = /^(as-expected|unexpected|no-change)/.test(o) ? o : 'no-change';
@@ -63,11 +67,11 @@ export async function walkInKernel({ ax, browser, completion, persona, task, url
       await ax.quiet(tab);
       seq = await ax.auditLeaks(tab, dataDir, seq, { task: task.id });
     }
-    const s = await (await completion(
+    const s = await mt.complete(completion, 'walk_survey',
       `You are ${persona.name}. You just tried to: ${task.title}. Outcome: ${success ? 'reached' : 'not reached'}.\n` +
       `Your steps:\n${steps.map((x) => `- ${x.think} (${x.outcome})`).join('\n')}\n` +
       'Rate ease 1-5 (1 very hard), confidence 1-5 that the task is really done, and give one sentence of comment.',
-      { model: 'smol', schema: SURVEY })).wait();
+      { schema: SURVEY });
     const clicks = steps.filter((x) => x.action === 'click').length;
     const walk = { task: task.id, persona: persona.name, success, clicks, steps,
       first_mark: steps.find((x) => x.mark != null)?.mark ?? null, survey: s, by: 'kernel' };
@@ -76,5 +80,6 @@ export async function walkInKernel({ ax, browser, completion, persona, task, url
     return walk;
   } finally {
     await browser.close({ name });
+    await mt.flush();
   }
 }

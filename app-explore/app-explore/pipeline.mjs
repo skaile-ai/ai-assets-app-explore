@@ -4,13 +4,12 @@
 //   await ap.synthesize({ completion }, { dataDir });
 //   await ap.synonyms({ judgeBatch }, { dataDir });
 //   await ap.scent({ judgeBatch }, { dataDir });
-// Module code cannot see eval prelude globals: the model helpers are passed in. Questions live in rubric.json.
+// Module code cannot see eval prelude globals: the model helpers are passed in. Questions live in rubric.json, and so
+// does each call kind's model role (`models`); every call is counted into run.json `models` (config.mjs `meter`).
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { writeRun } from './crawl.mjs';
-
-const RUBRIC = fileURLToPath(new URL('./rubric.json', import.meta.url));
+import { meter, readRubric } from './config.mjs';
 
 const readJson = async (p) => JSON.parse(await readFile(p, 'utf8'));
 const writeJson = (p, v) => writeFile(p, JSON.stringify(v, null, 2));
@@ -18,7 +17,7 @@ const writeJson = (p, v) => writeFile(p, JSON.stringify(v, null, 2));
 /** Graph, rubric, screens and the reports dir of a run. Media paths in graph.json are relative to the reports dir. */
 async function load(dataDir, { screens = false } = {}) {
   const graph = await readJson(join(dataDir, 'graph.json'));
-  const rubric = await readJson(RUBRIC);
+  const rubric = await readRubric();
   const reports = dirname(dataDir);
   const scr = {};
   if (screens) for (const s of graph.states) scr[s.id] = await readJson(join(dataDir, 'screens', `${s.id}.json`));
@@ -35,26 +34,13 @@ async function pool(items, n, fn) {
   return out;
 }
 
-/** Structured completion with one retry; returns {value} or {error}. */
-async function ask(completion, prompt, opts) {
+/** Structured completion of call kind `kind` with one retry (each attempt counted); returns {value} or {error}. */
+async function ask(mt, completion, kind, prompt, opts) {
   let err;
   for (let i = 0; i < 2; i++) {
-    try { return { value: await (await completion(prompt, opts)).wait() }; } catch (e) { err = e; }
+    try { return { value: await mt.complete(completion, kind, prompt, opts) }; } catch (e) { err = e; }
   }
   return { error: String(err?.message || err) };
-}
-
-/** Pull every settled item of a judge batch, then release it. Returns {key: item}. */
-async function drainAll(batch) {
-  const out = {};
-  try {
-    for (;;) {
-      const got = await batch.drain(120);
-      for (const [k, item] of got) out[k] = item;
-      if (!got.length && !(await batch.status()).running) break;
-    }
-  } finally { await batch.close(); }
-  return out;
 }
 
 const markLines = (marks, max = Infinity) => marks.slice(0, max).map((m) => `${m.n}: ${m.role} "${m.label}"`).join('\n');
@@ -108,6 +94,7 @@ ${screen.aria}`;
 export async function perceive({ judgeBatch, completion }, { dataDir, concurrency = 16, extractConcurrency = 8 }) {
   const t0 = Date.now();
   const { graph, rubric, reports, screens } = await load(dataDir, { screens: true });
+  const mt = meter(dataDir, rubric);
   const states = {}, images = {};
   for (const s of graph.states) {
     states[s.id] = { title: s.title, heading: s.heading, url: s.url, purpose_hint: (screens[s.id].text || '').slice(0, 600) };
@@ -116,8 +103,8 @@ export async function perceive({ judgeBatch, completion }, { dataDir, concurrenc
   const judged = (async () => {
     const t = Date.now();
     try {
-      const b = await judgeBatch(states, rubric.questions, { images, concurrency, intent: 'app-explore perceive' });
-      return { items: await drainAll(b), ms: Date.now() - t };
+      const items = await mt.judge(judgeBatch, 'perceive_judge', states, rubric.questions, { images, concurrency, intent: 'app-explore perceive' });
+      return { items, ms: Date.now() - t };
     } catch (e) {
       // the run died wholesale, e.g. no image-capable judge: extraction still lands, answers come from agents
       return { items: {}, ms: Date.now() - t, error: String(e?.message || e) };
@@ -126,10 +113,11 @@ export async function perceive({ judgeBatch, completion }, { dataDir, concurrenc
   const extracted = (async () => {
     const t = Date.now();
     const out = await pool(graph.states, extractConcurrency, (s) =>
-      ask(completion, extractPrompt(s, screens[s.id]), { model: 'smol', schema: EXTRACT_SCHEMA }));
+      ask(mt, completion, 'extract', extractPrompt(s, screens[s.id]), { schema: EXTRACT_SCHEMA }));
     return { out, ms: Date.now() - t };
   })();
   const [j, x] = await Promise.all([judged, extracted]);
+  await mt.flush();
   const perceived = {};
   const failed = { judge: [], extract: [] };
   graph.states.forEach((s, i) => {
@@ -262,7 +250,8 @@ function matchStates(prevStates, states) {
  */
 export async function synthesize({ completion }, { dataDir, prev = undefined }) {
   const t0 = Date.now();
-  const { graph } = await load(dataDir);
+  const { graph, rubric } = await load(dataDir);
+  const mt = meter(dataDir, rubric);
   const perceived = await readJson(join(dataDir, 'perceive.json'));
   let run = {};
   try { run = await readJson(join(dataDir, 'run.json')); } catch {}
@@ -273,7 +262,8 @@ export async function synthesize({ completion }, { dataDir, prev = undefined }) 
     objects: prev.objects.map(({ id, name, aliases, class: cls }) => ({ id, name, aliases, class: cls })),
     tasks: prev.tasks.map(({ id, title, persona, object, verb }) => ({ id, title, persona, object, verb })),
   };
-  const r = await ask(completion, synthPrompt(graph, perceived, run.lang || 'en', brief), { model: 'slow', schema: MODEL_SCHEMA });
+  const r = await ask(mt, completion, 'synthesize', synthPrompt(graph, perceived, run.lang || 'en', brief), { schema: MODEL_SCHEMA });
+  await mt.flush();
   if (r.error) throw new Error(`synthesize: ${r.error}`);
   const m = r.value;
   const ids = new Set(graph.states.map((s) => s.id));
@@ -366,9 +356,11 @@ export async function synonyms({ judgeBatch }, { dataDir, concurrency = 16 }) {
   const question = { same: { type: rubric.synonyms.type, instructions: rubric.synonyms.instructions } };
   let items = {}, error = null;
   if (list.length) {
+    const mt = meter(dataDir, rubric);
     try {
-      items = await drainAll(await judgeBatch(states, question, { concurrency, intent: 'app-explore synonyms' }));
+      items = await mt.judge(judgeBatch, 'synonyms', states, question, { concurrency, intent: 'app-explore synonyms' });
     } catch (e) { error = String(e?.message || e); }
+    await mt.flush();
   }
   const out = list.map((p) => ({ ...p, answer: items[p.id]?.ok ? items[p.id].answers.same : null }));
   await writeJson(join(dataDir, 'synonyms.json'), out);
@@ -451,12 +443,13 @@ export async function scent({ judgeBatch }, { dataDir, concurrency = 16, answers
   if (answers) {
     items = Object.fromEntries(Object.entries(answers).map(([k, a]) => [k, { ok: true, answers: { first_click: a } }]));
   } else {
+    const mt = meter(dataDir, rubric);
     try {
-      items = await drainAll(await judgeBatch(states, question, { images, concurrency, intent: 'app-explore scent' }));
+      items = await mt.judge(judgeBatch, 'scent', states, question, { images, concurrency, intent: 'app-explore scent' });
     } catch (e) {
       await writeJson(join(dataDir, 'scent.questions.json'), { image: join(reports, entry.som), question, states });
       throw new Error(`scent: judge unavailable (${e?.message || e}); questions in scent.questions.json`);
-    }
+    } finally { await mt.flush(); }
   }
   const fromEntry = graph.edges.filter((e) => e.from === entry.id);
   const urlOf = Object.fromEntries(graph.states.map((s) => [s.id, s.url]));

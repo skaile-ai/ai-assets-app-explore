@@ -1,4 +1,26 @@
 {
+  "features": {
+    "examples": true,
+    "seq": true,
+    "personas": 3,
+    "scent_path": true,
+    "mental_model": true,
+    "saliency": false
+  },
+  "models": {
+    "perceive_judge": "judge",
+    "extract": "smol",
+    "synthesize": "slow",
+    "synonyms": "judge",
+    "scent": "judge",
+    "walk_step": "smol",
+    "walk_survey": "smol",
+    "critic": "slow",
+    "mental_predict": "smol",
+    "mental_match": "judge",
+    "mental_update": "smol",
+    "path_scent": "judge"
+  },
   "gate": {
     "bool_true": 0.6,
     "bool_false": 0.4,

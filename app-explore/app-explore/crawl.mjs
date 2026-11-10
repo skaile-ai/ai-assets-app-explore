@@ -3,7 +3,7 @@
 //   const counts = await ax.crawl(tab, { dataDir, mediaDir, start: url, mode: 'readonly' });
 //   const { tab } = await ax.openGuarded(browser, { url, dataDir, mode, name });      // any other tab (walks): same guard, no login handling
 // Every function takes the tab (or the eval `browser`) as an argument: module code cannot see eval prelude globals.
-import { access, appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, appendFile, copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
 import { basename, join } from 'node:path';
@@ -402,15 +402,25 @@ async function langOf(tab) {
   return l.startsWith('de') ? 'de' : 'en';
 }
 
-/** Merge `patch` into <data>/run.json. */
+const runWrites = new Map(); // run.json path → tail of its write chain: merges in this process never interleave
+
+/**
+ * Merge `patch` into <data>/run.json (shallow). `patch` may be a function `(run) => patch` for a merge that reads the
+ * current value (e.g. summing run.json `models`). Writes to one run.json are serialized; returns the merged run.
+ */
 export async function writeRun(dataDir, patch) {
   const p = join(dataDir, 'run.json');
-  let run = {};
-  try { run = JSON.parse(await readFile(p, 'utf8')); } catch {}
-  Object.assign(run, patch);
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(p, JSON.stringify(run, null, 2));
-  return run;
+  const next = (runWrites.get(p) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    let run = {};
+    try { run = JSON.parse(await readFile(p, 'utf8')); } catch {}
+    Object.assign(run, typeof patch === 'function' ? patch(run) : patch);
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(`${p}.tmp`, JSON.stringify(run, null, 2));
+    await rename(`${p}.tmp`, p);
+    return run;
+  });
+  runWrites.set(p, next);
+  return next;
 }
 
 // ---------------------------------------------------------------- in-page scripts
