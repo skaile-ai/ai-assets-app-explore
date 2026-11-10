@@ -6,7 +6,7 @@ description: Explore a running web app like a user and report its perceived
   or re-running against a previous app-explore report.
 license: MIT
 metadata:
-  version: 0.1.0
+  version: 0.2.0
   publisher: skaile-ai
   requires: "report"
 ---
