@@ -1,5 +1,5 @@
 // Read-only breadth-first crawl of a web app for app-explore, run from an omp JavaScript eval cell.
-//   const ax = await import(`${process.env.HOME}/.omp/agent/skills/app-explore/crawl.mjs`);
+//   const ax = await import(`${helpers}/crawl.mjs`);   // helpers = this skill's dir, see SKILL.md
 //   const { tab } = await ax.openApp(browser, { url, dataDir, mode: 'readonly' });   // guard installed before the first load
 //   const counts = await ax.crawl(tab, { dataDir, mediaDir, start: url, mode: 'readonly' });
 // Every function takes the tab (or the eval `browser`) as an argument: module code cannot see eval prelude globals.
@@ -645,7 +645,8 @@ const CLOSE = /^(close|schließen|cancel|abbrechen|×|x|✕)$/i;
  * Breadth-first crawl into <data>/graph.json (rewritten after every state), <media>/<id>.png, <id>.som.png,
  * <id>.mobile.png (depth ≤ 1 pages) and <data>/screens/<id>.json. Pages are expanded by goto; dialogs, menus and
  * tab panels opened by a click are leaf states whose same-origin links are queued as pages. Seeds (previous run
- * URLs) are visited right after `start`. Returns counts.
+ * URLs) are visited right after `start`. Returns counts; `stopped` holds the error when the tab died mid-crawl
+ * (a page whose script froze the tab): every state captured before it is already on disk.
  */
 export async function crawl(tab, {
   dataDir, mediaDir, start, mode = 'readonly', seeds = [],
@@ -797,6 +798,8 @@ export async function crawl(tab, {
   enqueue(start, null, { action: 'goto', label: null, mark: null }, 0);
   for (const s of seeds) enqueue(s, null, { action: 'goto', label: null, mark: null }, 1);
 
+  let stopped = null;
+  try {
   while (queue.length && states.length < B.states && !late()) {
     const item = queue.shift();
     await goto(item.url);
@@ -865,11 +868,15 @@ export async function crawl(tab, {
       blocked += await drainBlocked(tab, dataDir, page.id);
     }
   }
+  } catch (e) {
+    stopped = `${e.message} (after ${states.length} states)`;
+    log(`crawl stopped: ${stopped}`);
+  }
   await save();
   const kinds = {};
   for (const s of states) kinds[s.kind] = (kinds[s.kind] || 0) + 1;
   let leaks = 0;
   try { leaks = (await readFile(join(dataDir, 'leaks.jsonl'), 'utf8')).split('\n').filter(Boolean).length; } catch {}
   return { states: states.length, kinds, edges: JSON.parse(await readFile(join(dataDir, 'graph.json'), 'utf8')).edges.length,
-    queued: queue.length, skipped, blocked, leaks, minutes: Math.round((Date.now() - t0) / 6000) / 10 };
+    queued: queue.length, skipped, blocked, leaks, minutes: Math.round((Date.now() - t0) / 6000) / 10, stopped };
 }
