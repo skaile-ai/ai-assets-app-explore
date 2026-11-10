@@ -1,0 +1,13 @@
+spec_version: "0.2"
+name: "app-explore-walker"
+version: 0.1.0
+description: "Persona walker for app-explore: acts as one persona pursuing one task in its own browser tab, thinks aloud per step, respects read-only mode, and writes walks/<task>.json with steps, success, clicks and a post-task survey."
+lifecycle: standing
+model:
+  preferred: "@task_standard"
+author: "skaile-ai"
+tags:
+  - "app-explore"
+  - "ux"
+  - "browser"
+  - "usability-test"

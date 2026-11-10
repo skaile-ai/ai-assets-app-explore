@@ -1,0 +1,19 @@
+publisher: skaile-ai
+license: MIT
+assets:
+  - kind: skill
+    name: app-explore
+    root: app-explore/app-explore
+    version: 0.1.0
+    dependencies:
+      - "@skaile-ai/report"
+      - "agent:@skaile-ai/app-explore-walker"
+      - "agent:@skaile-ai/app-explore-critic"
+  - kind: agent
+    name: app-explore-walker
+    root: app-explore/app-explore-walker
+    version: 0.1.0
+  - kind: agent
+    name: app-explore-critic
+    root: app-explore/app-explore-critic
+    version: 0.1.0

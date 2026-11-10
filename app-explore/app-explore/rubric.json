@@ -1,0 +1,135 @@
+{
+  "gate": {
+    "bool_true": 0.6,
+    "bool_false": 0.4,
+    "choice": 0.6,
+    "critic": 0.6
+  },
+  "questions": {
+    "screen_type": {
+      "type": "choice",
+      "instructions": "The image is a screenshot of one screen of a web app; numbered boxes mark its interactive elements. What kind of screen is it?",
+      "criteria": {
+        "landing": "start or welcome page that routes the user elsewhere",
+        "list": "a collection of items: rows, cards or a table",
+        "detail": "one item with its attributes",
+        "form": "fields to create or edit something",
+        "dashboard": "overview of several summaries, counts or recent items",
+        "settings": "configuration or preferences",
+        "dialog": "a modal, drawer or popup menu over another screen",
+        "empty": "a screen with no content yet",
+        "error": "an error, not-found or access-denied message"
+      }
+    },
+    "primary_action": {
+      "type": "choice",
+      "instructions": "Look at the screenshot as a first-time user. Is there one main action this screen invites?",
+      "criteria": {
+        "one-clear": "one action stands out by position, size or colour",
+        "several-competing": "several actions look equally important",
+        "none-visible": "no action stands out"
+      }
+    },
+    "hierarchy": {
+      "type": "score",
+      "instructions": "How clear is the visual hierarchy of this screen: does the eye know where to look first and what belongs together?",
+      "criteria": ["no focal point", "weak", "clear", "very clear"]
+    },
+    "title_matches": {
+      "type": "bool",
+      "instructions": "Does the screen's heading name the object or the task this screen is about?",
+      "criteria": {
+        "true": "the heading names what the screen shows or lets the user do",
+        "false": "no heading, a generic heading (app name, 'Home') or one that does not match the content"
+      }
+    },
+    "location": {
+      "type": "bool",
+      "instructions": "Does the screen show where the user is: an active navigation item, a breadcrumb or a selected tab?",
+      "criteria": {
+        "true": "a highlighted nav item, breadcrumb or selected tab marks the current place",
+        "false": "nothing on the screen shows the current place in the app"
+      }
+    },
+    "density": {
+      "type": "choice",
+      "instructions": "How dense is the content of this screen?",
+      "criteria": {
+        "sparse": "much empty space, little content",
+        "balanced": "content and whitespace in balance",
+        "crowded": "many elements compete for space and attention"
+      }
+    },
+    "labels": {
+      "type": "choice",
+      "instructions": "Are the labels of buttons, links and headings in words a first-time user understands?",
+      "criteria": {
+        "plain-words": "everyday words that say what happens",
+        "some-jargon": "a few internal, technical or abbreviated terms",
+        "jargon-or-icon-only": "mostly jargon, or many controls carry only an icon"
+      }
+    },
+    "icon_only": {
+      "type": "bool",
+      "instructions": "Are important actions shown only as icons, without a text label or tooltip?",
+      "criteria": {
+        "true": "at least one important action is an unlabelled icon",
+        "false": "important actions carry text"
+      }
+    }
+  },
+  "scent": {
+    "type": "choice",
+    "instructions": "The image shows the start screen of a web app; numbered boxes mark its interactive elements and the state lists them. The state names a persona and a task. Which numbered element would this persona click first to get the task done?",
+    "max_marks": 30
+  },
+  "rules": [
+    { "id": "R-hierarchy", "source": "rubric", "q": "hierarchy", "lt": 1.25, "sev": 3,
+      "text": "No clear visual hierarchy: the eye finds no focal point." },
+    { "id": "R-primary-competing", "source": "rubric", "q": "primary_action", "is": "several-competing", "sev": 2,
+      "text": "Several actions compete for attention; none reads as the main one." },
+    { "id": "R-primary-missing", "source": "rubric", "q": "primary_action", "is": "none-visible",
+      "and": { "q": "screen_type", "in": ["list", "form", "detail"] }, "sev": 2,
+      "text": "No main action is visible on a screen that should invite one." },
+    { "id": "R-title", "source": "rubric", "q": "title_matches", "is": false, "sev": 2,
+      "text": "The heading does not name what this screen shows or does." },
+    { "id": "R-location", "source": "rubric", "q": "location", "is": false, "min_depth": 1, "sev": 2,
+      "text": "Nothing shows where the user is: no active nav item, breadcrumb or selected tab." },
+    { "id": "R-density", "source": "rubric", "q": "density", "is": "crowded", "sev": 2,
+      "text": "The screen is crowded: many elements compete for space and attention." },
+    { "id": "R-labels", "source": "rubric", "q": "labels", "is": "some-jargon", "sev": 1,
+      "text": "Some labels use internal or technical terms." },
+    { "id": "R-labels", "source": "rubric", "q": "labels", "is": "jargon-or-icon-only", "sev": 3,
+      "text": "Labels are mostly jargon or icons only." },
+    { "id": "R-icon-only", "source": "rubric", "q": "icon_only", "is": true, "sev": 2,
+      "text": "Important actions are icons without a text label or tooltip." },
+    { "id": "G-overflow", "source": "geometry", "field": "overflow", "sev": 2,
+      "text": "Content overflows its container and is cut off or scrolls sideways." },
+    { "id": "G-overlap", "source": "geometry", "field": "overlap", "sev": 3,
+      "text": "Interactive elements overlap each other." },
+    { "id": "G-target", "source": "geometry", "field": "small_targets", "sev": 1,
+      "text": "Click targets are smaller than 24×24 px (WCAG 2.5.8)." },
+    { "id": "N-naming", "source": "naming", "min_labels": 2, "sev": 3,
+      "text": "One object goes by several names (OOUX P13)." },
+    { "id": "D-depth", "source": "depth", "gt": 4, "sev": 2,
+      "text": "The task's target screen is more than 4 clicks from the start." },
+    { "id": "W-failed", "source": "walk", "success": false, "sev": 4,
+      "text": "The persona could not finish the task." },
+    { "id": "W-struggle", "source": "walk", "success": true, "min_wrong_turns": 2, "max_ease": 2, "sev": 3,
+      "text": "The persona finished the task but struggled." },
+    { "id": "S-scent", "source": "scent", "correct": false, "sev": 2,
+      "text": "First click goes astray: the persona would start somewhere else than the path to the task." },
+    { "id": "X-write-leak", "source": "leak", "mode": "readonly", "sev": 4,
+      "text": "A write request reached the server during a readonly run." }
+  ],
+  "clarity": {
+    "hierarchy": { "score_max": 3 },
+    "primary_action": { "values": { "one-clear": 1, "several-competing": 0.5, "none-visible": 0 } },
+    "title_matches": { "values": { "true": 1, "false": 0 } },
+    "location": { "values": { "true": 1, "false": 0 }, "depth0": 1 },
+    "density": { "values": { "balanced": 1, "sparse": 0.5, "crowded": 0.5 } },
+    "labels": { "values": { "plain-words": 1, "some-jargon": 0.5, "jargon-or-icon-only": 0 } },
+    "icon_only": { "values": { "true": 0, "false": 1 } }
+  },
+  "bands": { "good": 75, "fair": 50 }
+}

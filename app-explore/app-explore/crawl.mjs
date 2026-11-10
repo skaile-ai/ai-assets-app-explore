@@ -157,12 +157,13 @@ async function drainKey(tab, key) {
 
 /**
  * Move the page's guard logs to <data>/blocked.jsonl (rejected writes) and <data>/passive.jsonl (writes the guard let
- * through, `why`: passive|allow|graphql|trpc). Returns how many blocked entries were moved.
+ * through, `why`: passive|allow|graphql|trpc). Each row's `state` is the id of the state whose page produced it (or
+ * null), `page` the URL the write was made on. Returns how many blocked entries were moved.
  */
 export async function drainBlocked(tab, dataDir, state = null) {
   const blocked = await drainKey(tab, BLOCK_KEY);
   const passed = await drainKey(tab, PASS_KEY);
-  const row = (r, extra) => JSON.stringify({ method: r.method, url: r.url, ...extra, state: state || r.state, page: r.state, ts: r.ts }) + '\n';
+  const row = (r, extra) => JSON.stringify({ method: r.method, url: r.url, ...extra, state: state ?? null, page: r.state, ts: r.ts }) + '\n';
   await appendFile(join(dataDir, 'blocked.jsonl'), blocked.map((r) => row(r, { acting: r.acting })).join(''));
   await appendFile(join(dataDir, 'passive.jsonl'), passed.map((r) => row(r, { why: r.why })).join(''));
   return blocked.length;
@@ -212,27 +213,31 @@ async function lastSeq(tab) {
   return r.length ? (r[r.length - 1].seq ?? r.length) : 0;
 }
 
-// Newest request seq plus a count of requests still waiting for an answer (streams and long polls older than 30 s
-// excluded: they never finish).
-async function netState(tab) {
+// Requests still waiting for an answer (streams and long polls older than 30 s excluded: they never finish).
+async function inflight(tab) {
   const r = await tab.requests();
   const now = Date.now();
-  const inflight = r.filter((x) => x.status == null && !x.failureText && !/eventsource|websocket/i.test(x.resourceType || '')
+  return r.filter((x) => x.status == null && !x.failureText && !/eventsource|websocket/i.test(x.resourceType || '')
     && now - (x.ts || now) < 30_000).length;
-  return { seq: r.length ? (r[r.length - 1].seq ?? r.length) : 0, inflight };
 }
 
-// Longest wait for a page load to show its first interactive element. An unbundled Vite dev server loads ~1500
-// modules per full page load and can render a minute after the first request; the wait ends early once the network
-// has been idle for RENDER_IDLE_MS, so a page that really has no controls costs only a few seconds.
+// Longest wait for a page load to settle. An unbundled Vite dev server loads ~1500 modules per full page load and
+// can render a minute after the first request; the wait ends once the page has held still for RENDER_IDLE_MS. A page
+// with fewer than SPARSE controls must hold still for SPARSE_IDLE_MS: a booting SPA can show a lone banner or a
+// "taking too long" screen with one Reload button for 20 s before its shell appears.
 const RENDER_MS = 120_000;
 const RENDER_IDLE_MS = 2000;
+const SPARSE = 3;
+const SPARSE_IDLE_MS = 30_000;
 
 /**
  * Wait for <body>, then until no new request has started for 500 ms (cap 5 s). With `render` (ms), then also wait
- * until the URL is stable and at least one visible interactive element exists (a cold SPA can redirect and render
- * long after the network first goes quiet), or until no request is new or in flight for 2 s; then let it settle once
- * more. Returns whether an interactive element showed up (always true without `render`).
+ * until no request is in flight and the URL, the number of visible interactive elements and the number of loaded
+ * scripts and styles have held still for RENDER_IDLE_MS (SPARSE_IDLE_MS while fewer than SPARSE controls show):
+ * a cold SPA can redirect and render long after the network first goes quiet, and a global banner can show buttons
+ * before the app shell exists. Finished fetches are left out so a polling page still settles. Gives up after
+ * `render` ms; then lets it settle once more. Returns whether an interactive element showed up (always true without
+ * `render`).
  */
 export async function quiet(tab, { idle = 500, cap = 5000, render = 0 } = {}) {
   try { await tab.waitForSelector('body', { timeout: cap }); } catch {}
@@ -246,23 +251,23 @@ export async function quiet(tab, { idle = 500, cap = 5000, render = 0 } = {}) {
   }
   if (!render) return true;
   const t1 = Date.now();
-  let url = await tab.url();
-  let waited = false, rendered = false;
+  let last = null, shown = 0, waited = false;
+  since = Date.now();
   while (Date.now() - t1 < render) {
-    let ok = false;
+    let loaded = 0;
     try {
-      ok = await tab.evaluate(`[...document.querySelectorAll(${JSON.stringify(INTERACTIVE)})].some((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; })`);
-    } catch {}
-    const u = await tab.url();
-    if (ok && u === url) { rendered = true; break; }
-    const n = await netState(tab);
-    if (n.seq !== seq || n.inflight || u !== url) { seq = n.seq; since = Date.now(); } else if (Date.now() - since >= RENDER_IDLE_MS) break;
-    url = u;
+      [shown, loaded] = await tab.evaluate(`[[...document.querySelectorAll(${JSON.stringify(INTERACTIVE)})].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; }).length,
+        performance.getEntriesByType('resource').filter((r) => !['fetch', 'xmlhttprequest', 'beacon'].includes(r.initiatorType)).length]`);
+    } catch { shown = 0; }
+    const busy = await inflight(tab);
+    const now = `${await tab.url()}|${shown}|${loaded}`;
+    if (now !== last || busy) { last = now; since = Date.now(); }
+    else if (Date.now() - since >= (shown < SPARSE ? SPARSE_IDLE_MS : RENDER_IDLE_MS)) break;
     waited = true;
     await sleep(250);
   }
   if (waited) await quiet(tab, { idle, cap });
-  return rendered;
+  return shown > 0;
 }
 
 /** URL path with numeric, UUID and long hex/base62 segments replaced by `:id` (hash routes included). */
@@ -671,7 +676,8 @@ export async function crawl(tab, {
   const queued = new Set();
   const queue = [];
   let seq = await lastSeq(tab);
-  let blocked = 0, skipped = 0;
+  let skipped = 0;
+  let here = null; // id of the last captured page: the state whose page produced the guard rows drained next
   const pad = (n) => `s${String(n).padStart(2, '0')}`;
 
   const enqueue = (href, parent, via, depth) => {
@@ -774,6 +780,7 @@ export async function crawl(tab, {
 
   // Same-origin SPA: history.pushState skips a full page load (on an unbundled dev server that load is ~1500
   // module requests). Counts only when the page text changed and no dialog/menu was left open; else a real goto.
+  // `full`: the start URL and seeds always get a real load (an app may redirect `/` only on a full load).
   const softGo = async (url) => {
     let cur = '';
     try { cur = await tab.url(); } catch {}
@@ -788,9 +795,9 @@ export async function crawl(tab, {
     return true;
   };
 
-  const goto = async (url) => {
-    await drainBlocked(tab, dataDir);
-    if (await softGo(url)) return;
+  const goto = async (url, { full = false } = {}) => {
+    await drainBlocked(tab, dataDir, here);
+    if (!full && await softGo(url)) return;
     try { await tab.goto(url); } catch (e) { log(`goto failed ${url}: ${e.message}`); }
     await quiet(tab, { render: RENDER_MS });
   };
@@ -802,14 +809,15 @@ export async function crawl(tab, {
   try {
   while (queue.length && states.length < B.states && !late()) {
     const item = queue.shift();
-    await goto(item.url);
+    await goto(item.url, { full: !item.parent });
     const landed = await tab.url();
     if (new URL(landed).origin !== origin) { log(`left origin: ${item.url} → ${landed}`); continue; }
     const r = await capture({ kind: 'page', parent: item.parent, via: item.via, depth: item.depth });
     urlState.set(item.url, r.state.id);
     urlState.set(normUrl(landed), r.state.id);
+    here = r.state.id;
     if (mode === 'readonly') seq = await auditLeaks(tab, dataDir, seq, r.state.id);
-    blocked += await drainBlocked(tab, dataDir, r.state.id);
+    await drainBlocked(tab, dataDir, r.state.id);
     if (!r.fresh) continue;
     const page = r.state;
     const pageUrl = await tab.url();
@@ -865,7 +873,7 @@ export async function crawl(tab, {
         if (d.fresh) await queueLinks(d.state.id, d.state.depth, d.marks);
       }
       if (mode === 'readonly') seq = await auditLeaks(tab, dataDir, seq, page.id);
-      blocked += await drainBlocked(tab, dataDir, page.id);
+      await drainBlocked(tab, dataDir, page.id);
     }
   }
   } catch (e) {
@@ -875,8 +883,9 @@ export async function crawl(tab, {
   await save();
   const kinds = {};
   for (const s of states) kinds[s.kind] = (kinds[s.kind] || 0) + 1;
-  let leaks = 0;
-  try { leaks = (await readFile(join(dataDir, 'leaks.jsonl'), 'utf8')).split('\n').filter(Boolean).length; } catch {}
+  const lines = async (f) => { try { return (await readFile(join(dataDir, f), 'utf8')).split('\n').filter(Boolean).length; } catch { return 0; } };
+  const blocked = await lines('blocked.jsonl');
+  const leaks = await lines('leaks.jsonl');
   return { states: states.length, kinds, edges: JSON.parse(await readFile(join(dataDir, 'graph.json'), 'utf8')).edges.length,
     queued: queue.length, skipped, blocked, leaks, minutes: Math.round((Date.now() - t0) / 6000) / 10, stopped };
 }
