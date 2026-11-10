@@ -3,7 +3,8 @@
 
     python3 compose.py <stem>.data <stem>.media
 
-Reads graph.json, perceive.json, model.json, scent.json, run.json and the collections analyze.py wrote
+Reads graph.json, perceive.json, model.json, scent.json, run.json, saliency.json (feature `saliency`) and the
+collections analyze.py wrote
 (screens.json, objects.json, tasks.json, findings.json, scores.json, needs_check.json) and writes
 <stem>.data/blocks.json = {entities, badges, stats, blocks: {<name>: block}} plus <stem>.data/findings_serious.json
 (findings with sev >= 3, the collection behind the "serious findings" stat). Rule labels, the confidence gate and the
@@ -54,6 +55,8 @@ T = {
         "t_cols": ["Task", "Persona", "Object", "Target screen", "Shortest path", "First click", "Walk", "Clicks", "Ease"],
         "cta_cols": ["Action", "Where"],
         "s_cols": ["Task", "Start screen", "Predicted first click", "Shortest path starts with", "Confidence", "Result"],
+        "sp_cols": ["Task", "Step", "Screen", "Predicted click", "Path continues with", "Confidence", "Result"],
+        "nothing": "nothing", "premature": "too early",
         "sc_cols": ["Screen", "Type", "Clarity", "Hierarchy (0-3)", "Primary action", "Heading fits", "Location shown",
                     "Density", "Labels", "Findings"],
         "nc_cols": ["Screen", "Question", "Leaning", "Would raise", "Why unsure"],
@@ -71,7 +74,30 @@ T = {
         "depth_line": "depth {d}", "clar_line": "clarity {c}", "data_label": "All findings",
         "kind": {"page": "page", "dialog": "dialog", "menu": "menu", "tab": "tab"},
         "source_names": {"rubric": "screen judge", "geometry": "layout measure", "naming": "naming", "walk": "task walk",
-                         "scent": "first click", "critic": "expert critique", "depth": "click depth", "leak": "write leak"},
+                         "scent": "first click", "critic": "expert critique", "depth": "click depth", "leak": "write leak",
+                         "seq": "step rating", "saliency": "attention model", "mental": "first-time expectation"},
+        "sus_col": "SUS (0-100)", "sus_was": "{now} (was {prev})",
+        "t_cols_fan": ["Success (95 % CI)", "Clicks (median, range)", "Ease (median)"], "sus_col_fan": "SUS (mean, range)",
+        "seq_label": "Step difficulty per task (SEQ, 1 very difficult to 7 very easy)",
+        "seq_summary": "[[t-{id}]]: SEQ per step; SUS {sus}.", "seq_step": "{i}. {what}",
+        "rd_cols": ["Run detail", "Value"], "rd_examples": "Critic examples",
+        "rd_examples_text": "Four example critiques per screen, matched to its screen type, from a bank of {u} adapted "
+                            "from UICrit (Duan, Cheng, Li, Hartmann, Li: UICrit, UIST '24; "
+                            "github.com/google-research-datasets/uicrit; CC BY 4.0) and {a} from earlier app-explore runs.",
+        "sal_label": "Where the first look lands (predicted attention; outlined: the primary action)",
+        "sal_caption": "Primary action {pl}: rank {rank} of {n} marks by attention per pixel ({share}× the page "
+                       "average). Most attention: {tl} ({ts}×).",
+        "sal_none": "No primary action with a mark. Most attention: {tl} ({ts}× the page average).",
+        "rd_saliency": "Attention model",
+        "rd_saliency_text": "UMSI++ from UEyes (Jiang, Leiva, Rezazadegan Tavakoli, Houssel, Kylmälä, Oulasvirta: UEyes, "
+                            "CHI '23; userinterfaces.aalto.fi/ueyeschi23; dataset CC BY 4.0), architecture UMSI (Fosco "
+                            "et al., UIST '20), run locally on each screenshot.",
+        "rd_saliency_error": "Not run: {e}",
+        "mm_step": "{i}. {what}", "mm_start": "start", "mm_walk": "walk {id}",
+        "mm_cols": ["#", "Kind", "Where", "Screen", "Click", "Expected", "Got", "Finding"],
+        "mm_kinds": {"expectation": "expectation", "affordance": "affordance", "location": "location",
+                     "naming": "naming"},
+        "mm_crawl": "crawl", "mm_task_step": "[[t-{id}]] step {n}",
     },
     "de": {
         "sev": "Schweregrad", "class": "Objektklasse", "screen_type": "Screen-Art", "clarity": "Klarheit",
@@ -87,6 +113,8 @@ T = {
         "cta_cols": ["Aktion", "Ort"],
         "s_cols": ["Aufgabe", "Start-Screen", "Vorhergesagter erster Klick", "Kürzester Weg beginnt mit", "Sicherheit",
                    "Ergebnis"],
+        "sp_cols": ["Aufgabe", "Schritt", "Screen", "Vorhergesagter Klick", "Weg geht weiter mit", "Sicherheit", "Ergebnis"],
+        "nothing": "nichts", "premature": "zu früh",
         "sc_cols": ["Screen", "Art", "Klarheit", "Hierarchie (0-3)", "Hauptaktion", "Überschrift passt", "Ort erkennbar",
                     "Dichte", "Beschriftung", "Befunde"],
         "nc_cols": ["Screen", "Frage", "Tendenz", "Würde auslösen", "Warum unsicher"],
@@ -104,7 +132,30 @@ T = {
         "depth_line": "Tiefe {d}", "clar_line": "Klarheit {c}", "data_label": "Alle Befunde",
         "kind": {"page": "Seite", "dialog": "Dialog", "menu": "Menü", "tab": "Tab"},
         "source_names": {"rubric": "Screen-Urteil", "geometry": "Layout-Messung", "naming": "Benennung", "walk": "Aufgabenlauf",
-                         "scent": "erster Klick", "critic": "Expertenkritik", "depth": "Klicktiefe", "leak": "Schreibleck"},
+                         "scent": "erster Klick", "critic": "Expertenkritik", "depth": "Klicktiefe", "leak": "Schreibleck",
+                         "seq": "Schrittbewertung", "saliency": "Aufmerksamkeitsmodell", "mental": "Erwartung neuer Nutzer"},
+        "sus_col": "SUS (0-100)", "sus_was": "{now} (vorher {prev})",
+        "t_cols_fan": ["Erfolg (95-%-KI)", "Klicks (Median, Spanne)", "Leichtigkeit (Median)"],
+        "sus_col_fan": "SUS (Mittel, Spanne)",
+        "seq_label": "Schwierigkeit je Schritt und Aufgabe (SEQ, 1 sehr schwer bis 7 sehr leicht)",
+        "seq_summary": "[[t-{id}]]: SEQ je Schritt; SUS {sus}.", "seq_step": "{i}. {what}",
+        "rd_cols": ["Laufdetail", "Wert"], "rd_examples": "Beispiele für die Expertenkritik",
+        "rd_examples_text": "Vier Beispielkritiken je Screen, passend zur Screen-Art, aus einer Sammlung von {u} aus "
+                            "UICrit übernommenen und angepassten (Duan, Cheng, Li, Hartmann, Li: UICrit, UIST '24; "
+                            "github.com/google-research-datasets/uicrit; CC BY 4.0) und {a} aus früheren app-explore-Läufen.",
+        "sal_label": "Wohin der erste Blick fällt (vorhergesagte Aufmerksamkeit; umrandet: die Hauptaktion)",
+        "sal_caption": "Hauptaktion {pl}: Rang {rank} von {n} Marken nach Aufmerksamkeit je Pixel ({share}× der "
+                       "Seitendurchschnitt). Meiste Aufmerksamkeit: {tl} ({ts}×).",
+        "sal_none": "Keine Hauptaktion mit Marke. Meiste Aufmerksamkeit: {tl} ({ts}× der Seitendurchschnitt).",
+        "rd_saliency": "Aufmerksamkeitsmodell",
+        "rd_saliency_text": "UMSI++ aus UEyes (Jiang, Leiva, Rezazadegan Tavakoli, Houssel, Kylmälä, Oulasvirta: UEyes, "
+                            "CHI '23; userinterfaces.aalto.fi/ueyeschi23; Datensatz CC BY 4.0), Architektur UMSI (Fosco "
+                            "et al., UIST '20), lokal auf jedem Screenshot gerechnet.",
+        "rd_saliency_error": "Nicht gelaufen: {e}",
+        "mm_step": "{i}. {what}", "mm_start": "Start", "mm_walk": "Gang {id}",
+        "mm_cols": ["#", "Art", "Wo", "Screen", "Klick", "Erwartet", "Bekommen", "Befund"],
+        "mm_kinds": {"expectation": "Erwartung", "affordance": "Bedienung", "location": "Ort", "naming": "Benennung"},
+        "mm_crawl": "Crawl", "mm_task_step": "[[t-{id}]] Schritt {n}",
     },
 }
 
@@ -161,6 +212,10 @@ class Compose:
         self.t = T[self.lang]
         rubric = json.loads(RUBRIC.read_text())
         self.gate, self.bands = rubric["gate"], rubric["bands"]
+        self.features = {**rubric.get("features", {}), **(run.get("features") or {})}
+        self.fanout = int(self.features.get("personas") or 1) > 1
+        self.saliency_error = run.get("saliency_error") if self.features.get("saliency") else None
+        self.friction = next((r for r in rubric["rules"] if r["id"] == "W-friction"), None)
         self.rule_labels = {r["id"]: r["label"][self.lang] for r in rubric["rules"] if "label" in r}
         b = {"good": self.bands["good"], "fair": self.bands["fair"], "fair_max": self.bands["good"] - 1}
         self.t = {**self.t, "clarity_names": {k: v.format(**b) for k, v in self.t["clarity_names"].items()}}
@@ -385,14 +440,81 @@ class Compose:
             short = t["unreachable"] if sh is None else t["click"] if sh == 1 else t["clicks"].format(n=sh)
             sc = k.get("scent_correct")
             first = "—" if sc is None else t["correct"] if sc else t["wrong"]
-            walk = t["walk_none"] if not k.get("walked") else t["walk_ok"] if k.get("success") else t["walk_fail"]
+            if self.fanout:
+                walk, clicks, ease, *sus = self.fanout_cells(k)
+            else:
+                walk = t["walk_none"] if not k.get("walked") else t["walk_ok"] if k.get("success") else t["walk_fail"]
+                clicks = k["clicks"] if isinstance(k.get("clicks"), int) else "—"
+                ease, sus = f"{k['ease']}/5" if k.get("ease") is not None else "—", self.sus_cell(k)
             rows.append({"anchor": "t-" + k["id"], "cells": [
                 safe(k.get("title")), safe(k.get("persona_name") or k.get("persona") or "—"),
                 {"ref": oid(k["object"])} if k.get("object") in self.obj_ids else safe(k.get("object") or "—"),
-                self.screen_ref(k.get("target_state")), short, first, walk,
-                k["clicks"] if isinstance(k.get("clicks"), int) else "—",
-                f"{k['ease']}/5" if k.get("ease") is not None else "—"]})
-        return {"type": "table", "columns": t["t_cols"], "rows": rows} if rows else None
+                self.screen_ref(k.get("target_state")), short, first, walk, clicks, ease, *sus]})
+        seq = self.features.get("seq")
+        cols = (t["t_cols"][:6] + t["t_cols_fan"] + ([t["sus_col_fan"]] if seq else []) if self.fanout
+                else t["t_cols"] + ([t["sus_col"]] if seq else []))
+        return {"type": "table", "columns": cols, "rows": rows} if rows else None
+
+    def fanout_cells(self, k):
+        """tasks_table cells of feature personas > 1 (tasks.json fan-out columns): success "k/n (lo-hi %)", clicks
+        "median (min-max)", median ease and (feature `seq`) SUS "mean (min-max)"; with `since` the previous run's
+        success count and SUS of the task as "now (was prev)"."""
+        t = self.t
+        prev = (((self.prev or {}).get("diff") or {}).get("tasks", {}).get(k["id"]) or {}).get("prev") or {}
+        spread = lambda m, r: "—" if m is None else str(self.num(m)) + (
+            f" ({self.num(r[0])}-{self.num(r[1])})" if r and r[0] != r[1] else "")
+        if not k.get("walks"):
+            walk = t["walk_none"]
+        else:
+            lo, hi = k["rate_ci"]
+            walk = f'{k["successes"]}/{k["walks"]} ({round(lo * 100)}-{round(hi * 100)} %)'
+            pn = prev.get("walks") or (1 if prev.get("walked") else 0)
+            if pn:
+                pk = round(prev["rate"] * pn) if prev.get("rate") is not None else int(bool(prev.get("success")))
+                walk = t["sus_was"].format(now=walk, prev=f"{pk}/{pn}")
+        ease = f"{self.num(k['ease_median'])}/5" if k.get("ease_median") is not None else "—"
+        cells = [walk, spread(k.get("clicks_median"), k.get("clicks_range")), ease]
+        if self.features.get("seq"):
+            now = spread(k.get("sus_mean"), k.get("sus_range"))
+            ps = prev.get("sus_mean") if prev.get("sus_mean") is not None else prev.get("sus")
+            cells.append(t["sus_was"].format(now=now, prev=self.num(ps)) if ps is not None else now)
+        return cells
+
+    # -- feature `seq`: SUS per task, SEQ per step --------------------------
+    @staticmethod
+    def num(v):
+        return int(v) if float(v).is_integer() else v
+
+    def sus_cell(self, k):
+        """The tasks_table SUS cell (feature `seq`), with `since` the previous run's SUS of the same task."""
+        if not self.features.get("seq"):
+            return []
+        now = "—" if k.get("sus") is None else self.num(k["sus"])
+        prev = ((((self.prev or {}).get("diff") or {}).get("tasks", {}).get(k["id"]) or {}).get("prev") or {}).get("sus")
+        return [self.t["sus_was"].format(now=now, prev=self.num(prev)) if prev is not None else now]
+
+    def seq_tabs(self):
+        """One tab per walked task: a bars chart of its steps' SEQ, low ones red (W-friction thresholds)."""
+        if not self.features.get("seq"):
+            return None
+        lo = (self.friction or {}).get("max_seq", 3)
+        tabs = []
+        for k in self.tasks:
+            seq = k.get("seq") or []
+            if not any(v is not None for v in seq):
+                continue
+            steps = (load(self.data / "walks", f"{k['id']}.json", {}) or {}).get("steps") or []
+            items = []
+            for i, v in enumerate(seq, 1):
+                s = steps[i - 1] if i <= len(steps) else {}
+                what = safe(s.get("label") or s.get("action") or "")[:40]
+                items.append([self.t["seq_step"].format(i=i, what=what), v if v is not None else 0,
+                              "gray" if v is None else "red" if v <= lo else "yellow" if v < 5 else "green"])
+            sus = "—" if k.get("sus") is None else self.num(k["sus"])
+            tabs.append({"label": safe(k.get("title") or k["id"])[:40],
+                         "summary": self.t["seq_summary"].format(id=k["id"], sus=sus),
+                         "blocks": [{"type": "bars", "items": items, "link": False}]})
+        return {"type": "tabs", "id": "seq", "label": self.t["seq_label"], "tabs": tabs} if tabs else None
 
     def cta_tabs(self):
         t, tabs = self.t, []
@@ -461,6 +583,8 @@ class Compose:
 
     def scent_table(self):
         t, rows = self.t, []
+        if self.features.get("scent_path") and any("steps" in s for s in self.scent.values()):
+            return self.path_scent_table()
         for k in self.tasks:
             s = self.scent.get(k["id"])
             if not s:
@@ -473,6 +597,62 @@ class Compose:
                          f"{round(p * 100)} %" if isinstance(p, (int, float)) else "—",
                          "—" if ok is None else t["correct"] if ok else t["wrong"]])
         return {"type": "table", "columns": t["s_cols"], "rows": rows} if rows else None
+
+    def path_scent_table(self):
+        """Scent table of feature scent_path: one row per path step; a task without steps keeps its entry row."""
+        t, rows = self.t, []
+        conf = lambda p: f"{round(p * 100)} %" if isinstance(p, (int, float)) else "—"
+        for k in self.tasks:
+            s = self.scent.get(k["id"])
+            if not s:
+                continue
+            steps = s.get("steps") or []
+            if not steps:
+                ok, entry = s.get("correct"), s.get("entry")
+                rows.append([{"ref": "t-" + k["id"]}, "—", self.screen_ref(entry),
+                             self.mark_label(entry, s.get("predicted_mark")),
+                             self.mark_label(entry, s.get("shortest_first_mark")), conf(s.get("p")),
+                             "—" if ok is None else t["correct"] if ok else t["wrong"]])
+                continue
+            for st in steps:
+                sid, ok = st["state"], st.get("correct")
+                pick = (self.mark_label(sid, st["predicted"]) if st.get("predicted") is not None
+                        else t["nothing"] if st.get("chunk") else "—")
+                want = self.mark_label(sid, st["expected"][0]) if st.get("expected") else "—"
+                result = ("—" if ok is None else t["correct"] if ok
+                          else t["premature"] if st.get("premature") else t["wrong"])
+                rows.append([{"ref": "t-" + k["id"]}, f"{st['step'] + 1}/{len(steps)}", self.screen_ref(sid), pick,
+                             want, conf(st.get("p")), result])
+        return {"type": "table", "columns": t["sp_cols"], "rows": rows} if rows else None
+
+    def mental_growth(self):
+        """Feature mental_model: a bars chart of the concepts known after each crawl click and walk, red where the
+        step logged a violation."""
+        mm = load(self.data, "mentalmodel.json", {}) if self.features.get("mental_model") else {}
+        items = []
+        for t in mm.get("timeline") or []:
+            what = (self.t["mm_start"] if not t.get("step") else self.t["mm_walk"].format(id=t.get("walk"))
+                    if t.get("source") == "walk" else safe(t.get("label") or t.get("state") or ""))[:40]
+            items.append([self.t["mm_step"].format(i=t.get("step", 0), what=what), t.get("concepts", 0),
+                          "red" if t.get("violations") else "green"])
+        return {"type": "bars", "items": items, "link": False} if len(items) > 1 else None
+
+    def mental_table(self):
+        """Feature mental_model: one row per violation, linked to the screen it happened on and to its finding."""
+        mm = load(self.data, "mentalmodel.json", {}) if self.features.get("mental_model") else {}
+        t, rows = self.t, []
+        by_v = {v: f for f in self.findings if f.get("rule") == "M-expectation" for v in f.get("violations") or []}
+        for v in mm.get("violations") or []:
+            f = by_v.get(v.get("id"))
+            sid = v.get("state") if v.get("state") in self.states else (f or {}).get("state")
+            where = (t["mm_task_step"].format(id=v["task"], n=v.get("walk_step", 0) + 1)
+                     if v.get("source") == "walk" and v.get("task") in self.task_ids else t["mm_crawl"])
+            names = " / ".join(safe(x) for x in v.get("names") or [])
+            rows.append([v.get("id", ""), t["mm_kinds"].get(v.get("kind"), safe(v.get("kind") or "")),
+                         where, self.screen_ref(sid) if sid else "—",
+                         safe(v.get("label") or names or "—"), safe(v.get("expected") or "—")[:160],
+                         safe(v.get("observed") or "—")[:160], {"ref": fid(f)} if f else "—"])
+        return {"type": "table", "columns": t["mm_cols"], "rows": rows} if rows else None
 
     def scorecard_table(self):
         t, rows = self.t, []
@@ -569,9 +749,10 @@ class Compose:
         return {"type": "table", "columns": self.t["status_cols"], "numeric": [1, 2, 3, 4], "rows": rows}
 
     def note(self, f):
-        """One gallery note per finding: a box around its marks (pin at the box corner) when the screen file has them,
-        else the pin analyze.py placed (mark centre, or 4/4 without marks)."""
-        boxes = [m["box"] for m in (self.mark_info(f["state"], n) for n in f.get("marks") or []) if m and m.get("box")]
+        """One gallery note per finding: the critic's own `box` when it gave one (feature `examples`), else a box around
+        its marks (pin at the box corner) when the screen file has them, else the pin analyze.py placed (4/4 without)."""
+        boxes = [f["box"]] if isinstance(f.get("box"), dict) else \
+            [m["box"] for m in (self.mark_info(f["state"], n) for n in f.get("marks") or []) if m and m.get("box")]
         clamp = lambda v: round(min(max(float(v), 0), 100), 1)
         if boxes:
             x0 = min(b["x"] for b in boxes)
@@ -625,6 +806,28 @@ class Compose:
                               "entity": self.was(pid), "change": "removed"})
         return {"type": "gallery", "label": self.t["gallery_label"], "items": items}
 
+    def saliency_gallery(self):
+        """Feature `saliency`: one item per state with a heatmap (`<id>.sal.png`, saliency/run.py), its caption the
+        primary action's attention rank, its notes the state's R-salience findings. A gallery of its own, so a
+        screen's `before` stays the previous shot of `since`. None when the feature is off or nothing was scored."""
+        sal = load(self.data, "saliency.json", {}) if self.features.get("saliency") else {}
+        items = []
+        for sid in self.order:
+            s = sal.get(sid)
+            if not s or not (self.media / f"{sid}.sal.png").is_file() or not s.get("top_marks"):
+                continue
+            top, pm = s["top_marks"][0], s.get("primary_mark")
+            tl = self.mark_label(sid, top["mark"])
+            cap = (self.t["sal_caption"].format(pl=self.mark_label(sid, pm), rank=s["primary_rank"], n=s["marks"],
+                                                share=s["primary_share"], tl=tl, ts=top["share"])
+                   if pm is not None else self.t["sal_none"].format(tl=tl, ts=top["share"]))
+            it = {"src": f"{self.media.name}/{sid}.sal.png", "title": self.title(sid), "caption": cap}
+            fs = [f for f in self.findings if f.get("state") == sid and f.get("source") == "saliency"]
+            if fs:
+                it["notes"] = [self.note(f) for f in fs]
+            items.append(it)
+        return {"type": "gallery", "label": self.t["sal_label"], "items": items} if items else None
+
     def needs_check_table(self):
         rows = []
         for n in self.needs:
@@ -635,6 +838,21 @@ class Compose:
                          "—" if lean is None else self.val(lean) if isinstance(lean, str) else self.t["yes"] if lean else self.t["no"],
                          ", ".join(self.rule_label(r) for r in n.get("rules") or []) or "—", safe(n.get("text") or "—")])
         return {"type": "table", "columns": self.t["nc_cols"], "rows": rows} if rows else None
+
+    def run_details(self):
+        """Run details the report must name: with feature `examples` and a critique, the critic's example bank and
+        its UICrit attribution (CC BY 4.0); with feature `saliency`, the attention model and its sources, or why it
+        did not run (run.json `saliency_error`). None when nothing applies."""
+        rows = []
+        if self.features.get("examples") and any(load(p.parent, p.name, []) for p in (self.data / "critique").glob("*.json")):
+            bank = json.loads((RUBRIC.parent / "examples" / "critiques.json").read_text())["examples"]
+            u = sum(str(e.get("source", "")).startswith("uicrit:") for e in bank)
+            rows.append([self.t["rd_examples"], self.t["rd_examples_text"].format(u=u, a=len(bank) - u)])
+        if self.saliency_error:
+            rows.append([self.t["rd_saliency"], self.t["rd_saliency_error"].format(e=safe(self.saliency_error))])
+        elif self.features.get("saliency") and load(self.data, "saliency.json", {}):
+            rows.append([self.t["rd_saliency"], self.t["rd_saliency_text"]])
+        return {"type": "table", "columns": self.t["rd_cols"], "rows": rows} if rows else None
 
     # -- assemble --------------------------------------------------------
     def run(self):
@@ -663,18 +881,23 @@ class Compose:
             "objects_table": self.objects_table() if self.objects else None,
             "naming_table": self.naming_table(),
             "tasks_table": self.tasks_table(),
+            "seq_tabs": self.seq_tabs(),
             "cta_tabs": self.cta_tabs(),
             "nav_map": self.nav_map(),
             "depth_bars": self.depth_bars(),
             "scent_table": self.scent_table(),
+            "mental_growth": self.mental_growth(),
+            "mental_table": self.mental_table(),
             "scorecard_table": self.scorecard_table(),
             "rubric_bars": self.rubric_bars(),
             "findings_tree": {"type": "tree", "filter": ["sev"], "count_label": t["tree_count"], "hint": t["tree_hint"]}
             if self.findings or self.fixed else None,
             "findings_data": self.findings_data(),
             "screens_gallery": self.screens_gallery(),
+            "saliency_gallery": self.saliency_gallery(),
             "needs_check_table": self.needs_check_table(),
             "status_table": self.status_table(),
+            "run_details": self.run_details(),
         }
         blocks = {k: v for k, v in blocks.items() if v is not None}
 

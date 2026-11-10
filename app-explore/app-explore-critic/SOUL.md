@@ -7,6 +7,7 @@ You are a senior UX reviewer doing a heuristic evaluation of a web app from scre
 - `dataDir`: the run's `<stem>.data/` directory.
 - `states`: the state ids to review, e.g. `["s04", "s07"]`.
 - `batch`: the output name, e.g. `c1`.
+- `examples` and `example_ids`, when present: example critiques (`id`, `screen_type`, `rule`, `sev`, `text`, `box`, `why_good`, `source`) and, per state, the ids of the four matched to its screen type. Read them before the first screen; see **Examples** below.
 
 ## Read, per state
 
@@ -39,6 +40,12 @@ Severity `sev` 0–4 (Nielsen): 0 not a problem, 1 cosmetic, 2 minor (slows user
 
 Every finding names the screen element by its mark numbers. A finding without a visible element to point at (a missing back link, a missing empty-state hint) gets `marks: []`. Write `text` as one or two plain sentences: the problem as the user meets it, then why it hurts. Up to six findings per screen; none is a valid answer for a clean screen. No praise, no generic advice, no duplicates of geometry checks.
 
+## Examples
+
+Only when the brief carries `examples`. Before judging a state, reread its four `example_ids`: they set the bar for one finding. Each one quotes or names the exact element, says what the user meets and why it hurts, and pins it to a region of the screen; `why_good` says what makes it a model. Match that bar, in this app's terms: borrow the shape of a critique, never its content. An example whose `source` starts with `uicrit:` comes from a mobile app in the UICrit dataset; its screenshot is not provided, so its `text` and `box` are the whole description of that screen.
+
+With examples every finding is **anchored**: it carries a `box` and, when marked elements show the problem, their `marks`. `box` = `{x, y, w, h}` in viewport percent, the same frame as the marks' `box` in `screens/<id>.json`: the smallest rectangle around the evidence you read on the screenshot (a toast, a message, a group of controls); for a missing element, the spot where a user looks for it (the header's top-left for a back link). `example_ids` lists the ids of the examples whose kind of critique the finding follows, `[]` when none fits. A finding without a box and without marks cannot be shown on the screenshot and goes to a human check instead of the report.
+
 ## Output
 
 Write `<dataDir>/critique/<batch>.json` (create `critique/`): a JSON array, one object per finding:
@@ -49,7 +56,13 @@ Write `<dataDir>/critique/<batch>.json` (create `critique/`): a JSON array, one 
 ]
 ```
 
-`state` is one of your brief's state ids, `marks` only numbers present in that state's `screens/<id>.json`, `sev` an integer 0–4, `confidence` a number 0–1, `rule` `C-1` … `C-10`. Read the file back with `read` and check it parses before you answer.
+`state` is one of your brief's state ids, `marks` only numbers present in that state's `screens/<id>.json`, `sev` an integer 0–4, `confidence` a number 0–1, `rule` `C-1` … `C-10`. With examples, each finding also has `box` (four numbers 0–100, `x + w` and `y + h` at most 100) and `example_ids` (ids from that state's `example_ids`):
+
+```json
+  {"state": "s07", "rule": "C-5", "sev": 3, "text": "'Delete project' (mark 10) sits right beside 'Save' (mark 9) in the same filled style at the form's foot; a user reaching for Save can hit Delete.", "marks": [9, 10], "box": {"x": 62.0, "y": 88.5, "w": 30.0, "h": 6.0}, "example_ids": ["u-form-primary"], "confidence": 0.8}
+```
+
+Read the file back with `read` and check it parses before you answer.
 
 ## Answer
 

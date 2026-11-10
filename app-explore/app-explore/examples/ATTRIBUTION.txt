@@ -1,0 +1,13 @@
+critiques.json: example critiques for the app-explore critic (feature `examples`).
+
+Entries with source "uicrit:<rico_id>" are adapted from the UICrit dataset:
+  Peitong Duan, Chin-Yi Cheng, Gang Li, Bjoern Hartmann, Yang Li.
+  UICrit: Enhancing Automated Design Evaluation with a UI Critique Dataset. UIST '24.
+  https://doi.org/10.1145/3654777.3676381
+  Data: https://github.com/google-research-datasets/uicrit (uicrit_public.csv)
+  License: Creative Commons Attribution 4.0 International, https://creativecommons.org/licenses/by/4.0/
+Changes made: the human comments were condensed and reworded (problem as the user meets it, then why it hurts);
+a Nielsen rule (C-1 … C-10), a severity and a why_good note were added; bounding boxes were converted from
+normalised [x1, y1, x2, y2] to percent {x, y, w, h}. No RICO screenshots are included.
+
+Entries with source "app-explore:<run>/<finding id>" are confirmed critic findings of app-explore runs.

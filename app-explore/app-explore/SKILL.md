@@ -51,12 +51,12 @@ const features = cfg.resolveFeatures(await cfg.readRubric(), { with: withList, w
 
 |Feature|Default|Gates|Cost|
 |---|---|---|---|
-|`examples`|on|step 8 critic: four example critiques matched to the screen type; every critic finding carries a box or marks|longer critic prompt, no extra call|
+|`examples`|on|step 8 critic: four example critiques per screen matched to its screen type (`examples/critiques.json`, UICrit CC BY 4.0 + own runs); every critic finding carries a `box` or marks, else it goes to `needs_check`; step 9 `run_details` names the UICrit attribution|longer critic prompt, no extra call|
 |`seq`|on|step 8 walks: SEQ 1-7 per step and the 10 SUS items after the task; `W-friction` findings, SUS in the report|no extra call|
-|`personas <n>`|3|step 8: per task one walker agent plus `n-1` kernel walks with persona variants|`n-1` × tasks × up to 16 `smol` calls|
+|`personas <n>`|3|step 6: `n-1` persona variants per persona; step 8: per task one walker agent plus `n-1` kernel walks with those variants; steps 7 and 9: walk findings and the tasks table on the task's success rate|`n-1` × tasks × up to 16 `smol` calls|
 |`scent_path`|on|step 6 scent: every state along each task's shortest path, marks in reading order in chunks of 8; `S-premature` findings|one judge call per path state and chunk|
-|`mental_model`|on|steps 6 and 8: a first-time user's model grown along crawl edges and walks; `M-expectation` findings|per crawl edge one `smol` prediction, one judge match, one `smol` update|
-|`saliency`|off|step 7: a local saliency model scores each screenshot; `R-salience` findings, heatmap overlay in the gallery|local CPU model, must be installed|
+|`mental_model`|on|steps 6b and 8b: a first-time user's model grown along crawl edges and walks (`mentalmodel.json`); step 7 `M-expectation` findings; step 9 `mental_growth`, `mental_table`|per crawl edge (≤ `mental.max_edges`) one `smol` prediction, one judge match, one `smol` update; per walk one `smol` update plus a judge match per free-text outcome|
+|`saliency`|off|step 5b: the local UMSI++ model scores each screenshot (`saliency.json`, `<id>.sal.png` heatmaps); step 7 `R-salience` findings; step 9 `saliency_gallery`|one-time install of about 1.5 GB in `~/.cache` (needs python3.11); about 0.15 s CPU per screen, no model call|
 
 `run.json.features` is the run's only record of the switches: every later step reads it (`await cfg.features(dataDir)`), never the arguments. A switch whose step does not read it has no effect, and a feature that is off writes no file and adds no finding.
 
@@ -169,15 +169,36 @@ Two things run in parallel per state. The cheap judge answers the rubric questio
 
 **Done when** `perceive.json` has one entry per `graph.json` state, each with `answers` and `extract`, and `run.json.perception` is `judge` or `agent`.
 
+## 5b. Saliency (feature `saliency` only)
+
+Run this step only when `run.json.features.saliency` is true:
+
+```bash
+PY=$(bash <skill dir>/saliency/setup.sh) && "$PY" <skill dir>/saliency/run.py <reports dir>/<stem>.data <reports dir>/<stem>.media
+```
+
+`setup.sh` installs once into `~/.cache/app-explore/saliency/`: a python3.11 venv with TensorFlow, tf-keras and Pillow, and the UMSI++ weights `umsi++.hdf5`, downloaded from the UEyes site on the user's machine (the skill does not ship them). It prints the venv's python; later calls skip what exists. `run.py` predicts where a first look lands on each screenshot with UMSI++ (UEyes, CHI '23, trained on eye tracking over UI screenshots) and writes `<stem>.media/<id>.sal.png` (heatmap over the screenshot, the primary action outlined) and `<stem>.data/saliency.json` = `{<id>: {primary_mark, primary_source, primary_share, primary_rank, marks, top_marks: [{mark, share}], rendered_ms}}`. A mark's `share` is its attention per pixel against the page average (saliency mass in its box over the box's share of the page). The primary mark is the action `perceive.json` `extract` flags `primary`, else its first action with a mark.
+
+`setup.sh` fails (exit 2: no python3.11; else pip or the download failed): record why and go on with step 6:
+
+```bash
+python3 <skill dir>/saliency/run.py <reports dir>/<stem>.data <reports dir>/<stem>.media --error "<setup.sh's last stderr line>"
+```
+
+`run.py` records its own failures the same way. `run.json.saliency_error` reaches the report's `run_details`.
+
+**Done when** `saliency.json` has an entry per `graph.json` state and each has its `<id>.sal.png`, or `run.json.saliency_error` is set.
+
 ## 6. Synthesise the object model, check synonyms and first-click scent
 
 ```js
 const m = await ap.synthesize({ completion }, { dataDir });
 const y = await ap.synonyms({ judgeBatch }, { dataDir });
 const s = await ap.scent({ judgeBatch }, { dataDir });
+const sp = await ap.pathScent({ judgeBatch }, { dataDir });   // after scent; feature scent_path off: { skipped: true }
 ```
 
-`synthesize` hands every extraction plus the graph (state id, route, heading, depth, edges) to the slow model once and writes `<stem>.data/model.json`: 2 **personas** (`p1` first-time user, `p2` a domain role), the **objects** in OOUX terms (one object per thing, every other UI name of it in `aliases`; class core, supporting, child or system; attributes, relationships, calls to action, home states, representations) and at most 6 **tasks** (create, find, edit of core objects, each with a `target_state`). Objects whose `homes` hold no `graph.json` state and new tasks whose `target_state` is missing are dropped (`m.dropped` counts them). Names are in the app's language (`run.json.lang`).
+`synthesize` hands every extraction plus the graph (state id, route, heading, depth, edges) to the slow model once and writes `<stem>.data/model.json`: 2 **personas** (`p1` first-time user, `p2` a domain role), the **objects** in OOUX terms (one object per thing, every other UI name of it in `aliases`; class core, supporting, child or system; attributes, relationships, calls to action, home states, representations) and at most 6 **tasks** (create, find, edit of core objects, each with a `target_state`). Objects whose `homes` hold no `graph.json` state and new tasks whose `target_state` is missing are dropped (`m.dropped` counts them). Names are in the app's language (`run.json.lang`). With feature `personas` n > 1 every persona also gets n-1 **variants** in the same call: other people in the same role, spread over digital literacy, hurry and prior domain knowledge (`{id: "<persona id>-v<k>", name, literacy, hurry, domain, note}`, value lists in rubric.json `personas`); `m.variants` counts them and `m.variants_short` lists personas that got fewer.
 
 With `since`, `synthesize` reads the previous `model.json` and `graph.json` from `run.json.since` itself: persona and object ids stay the same for the same things, every previous task is kept as it was (up to 2 new ones join it), and its `target_state` is not the model's pick but the state of this crawl that matches its previous target the way `diff.json` matches screens (state key, else route + kind + heading). A previous task without such a match gets `target_state: null` and `target_missing: true`, so step 8 walks it and it fails visibly. `model.json` `kept` = `{ids, missing}` (the previous task ids, and those without a target); `synthesize` returns the same `kept`.
 
@@ -185,10 +206,26 @@ With `since`, `synthesize` reads the previous `model.json` and `graph.json` from
 
 `scent` asks the judge, per task, which numbered mark on the entry state (the crawl's first state) the persona would click first, and compares it with the first edge of every shortest click path from there to the task's `target_state`. `<stem>.data/scent.json` per task: `predicted_mark`, `p`, `shortest_first_mark`, `first_marks`, `first_labels`, `clicks`, `correct` (`null` when the target is the entry itself, unreachable or `null`, or the judge gave no answer; `false` when the path's first control carries no mark on the entry screenshot, e.g. below the fold).
 
+`pathScent` (feature `scent_path`) repeats the scent check on every state of each task's shortest path, the entry included, the way a user scans: the state's marks in reading order (rows top to bottom, left to right), cut into groups of `rubric.json` `scent.chunk_size` (8; at most `scent.max_marks` marks). The judge sees one group at a time with the persona, the task, the step and the clicks so far, and picks one of the group's marks or `next`; `next` shows the following group in the next round. It adds `steps[]` to each task in `scent.json`: per path state `step` (0 = entry), `state`, `chunk` (group of the pick, 1-based), `chunks`, `predicted` (mark; `null` = nothing on this screen), `expected` (the path's marks), `expected_chunk`, `correct` (as for the entry), `premature` (wrong pick in a group before the right mark's group), `p`. Every call is a judge call of kind `path_scent`. `sp.judge_error` set: the judge died; the unanswered steps carry `error: "judge unavailable"`; rerun `pathScent` once the judge is back.
+
 - `m.objects < 3`: the crawl saw too little of the app; go back to step 4 with a higher budget.
 - `scent` throws `judge unavailable`: one `app-explore-critic` agent reads `scent.questions.json` and its `image`, answers `first_click` per task in the judge choice shape into `<stem>.data/scent.agent.json`; then `await ap.scent({ judgeBatch }, { dataDir, answers: JSON.parse(await Bun.file(`${dataDir}/scent.agent.json`).text()) })`.
 
-**Done when** `model.json` has ≥ 3 objects, each with a `homes` state in `graph.json`, every task's `target_state` exists in `graph.json` (with since: or is `null` with `target_missing`), `synonyms.json` exists, `scent.json` has one entry per task, and `run.json.models` has `calls` for `perceive_judge`, `extract`, `synthesize`, `synonyms` (when it had pairs) and `scent` (when the judge answered).
+**Done when** `model.json` has ≥ 3 objects, each with a `homes` state in `graph.json`, every task's `target_state` exists in `graph.json` (with since: or is `null` with `target_missing`), `synonyms.json` exists, `scent.json` has one entry per task (with `scent_path`: each with `steps[]`, one per path state), and `run.json.models` has `calls` for `perceive_judge`, `extract`, `synthesize`, `synonyms` (when it had pairs), `scent` (when the judge answered) and `path_scent` (with `scent_path`, when a task has a path).
+
+## 6b. Mental model (feature `mental_model` only)
+
+A simulated first-time user knows only what it has seen. `mentalModel` replays the crawl edges in BFS order from the entry state, at most `rubric.json` `mental.max_edges`; per edge three cheap calls: `smol` predicts from the model so far and the clicked label what the click will show (kind, heading, object, purpose; `mental_predict`), the judge decides `matches` between that prediction and the target state's screenshot plus perceive extract (`mental_match`, gated like every bool; undecided = `null`), and `smol` updates the **concepts** (objects, places, actions with `believed_attributes`, `seen_in`, `confidence`) and logs **contradictions** (`mental_update`). Feature off: it returns `{ skipped }` and writes nothing.
+
+```js
+const mm = await ap.mentalModel({ judgeBatch, completion }, { dataDir });   // { edges, of, concepts, violations, unsure, errors }
+```
+
+`<stem>.data/mentalmodel.json` = `{cap, concepts, timeline, violations, after_crawl, errors?}`: `timeline[]` one entry per step (0 = the entry state) with `state`, `label`, `predicted`, `matches`, `p`, `added`/`confirmed`/`contradicted`, `concepts` (count so far) and the ids of its `violations`; `violations[]` with `id`, `kind`, `source` (`crawl` | `walk`), `state`, `label`, `expected`, `observed`. The four kinds: `expectation` (the click showed another thing than its label promised), `affordance` (the control looked like one kind of control and acted like another, e.g. a project link that only expands the sidebar), `location` (a known thing turned up where the user did not expect it), `naming` (`names`: one thing under two names, `same-object-different-name`, or one name for two things, `same-label-different-target`). A miss's kind comes from the update; contradictions on a step that already missed are dropped as repeats.
+
+- `mm.errors > 0`: `mentalmodel.json` `errors` names the step and call kind; a judge outage leaves `matches: null` on those steps and adds no violation. Re-run this step once the judge answers; it rewrites the file.
+
+**Done when** `mentalmodel.json` exists with one `timeline` entry per replayed edge plus the entry, `run.json.models` has `calls` for `mental_predict`, `mental_match` and `mental_update`, and `mm.errors` is 0; with `mental_model` off, no `mentalmodel.json` exists.
 
 ## 7. Findings and scores
 
@@ -196,13 +233,17 @@ With `since`, `synthesize` reads the previous `model.json` and `graph.json` from
 python3 <skill dir>/analyze.py <reports dir>/<stem>.data            # with since: append  --since <since>
 ```
 
-`analyze.py` (Python stdlib) applies `rubric.json` rules to the perceptions, the crawl's geometry (overflow, overlap, small targets), the object names (several labels for one object, OOUX P13, after the synonym checks of step 6), click depth from the entry state, `scent.json`, `leaks.jsonl` (readonly runs; a walk's leak names its task), and, once they exist, `walks/*.json` and `critique/*.json`. Every judge answer and critique finding passes the rubric.json `gate` (bool true/false thresholds, choice: the chosen label's own probability, critic confidence); a `score` counts as its expected level. Anything outside the gate never becomes a finding; it goes to `needs_check.json` ("needs a human look") with its leaning answer and the rules it would trigger.
+`analyze.py` (Python stdlib) applies `rubric.json` rules to the perceptions, the crawl's geometry (overflow, overlap, small targets), the object names (several labels for one object, OOUX P13, after the synonym checks of step 6), click depth from the entry state, `scent.json`, `leaks.jsonl` (readonly runs; a walk's leak names its task), and, once they exist, `walks/*.json` and `critique/*.json`. With `scent_path`, a task's `steps[]` replace its entry check: each wrong step gives `S-scent` on that step's screen (the text names the step), or `S-premature` when the pick came in an earlier group than the right mark. Every judge answer and critique finding passes the rubric.json `gate` (bool true/false thresholds, choice: the chosen label's own probability, critic confidence); a `score` counts as its expected level. Anything outside the gate never becomes a finding; it goes to `needs_check.json` ("needs a human look") with its leaning answer and the rules it would trigger.
 
 It writes into the data dir:
 
-- `findings.json`: one finding per rule and state, id `<rule>@<state key[:8]>` (stable across runs); a naming finding is one per object, id `<rule>@<state key[:8]>-<object id>`, with `object`; a walk finding is one per task, id `<rule>@<state key[:8]>-<task id>`, with `task`. Each has `source`, `sev`, `text`, `marks`, `confidence` and `pins` (`{x, y, n}` in percent at each mark's box centre, `{x: 4, y: 4}` without marks), sorted by severity.
-- `scores.json`: `clarity` 0–100 per screen and for the app, `findability` (walk success rate × mean directness; `null` before walks), `naming` (share of objects with one name).
+- `findings.json`: one finding per rule and state, id `<rule>@<state key[:8]>` (stable across runs); a naming finding is one per object, id `<rule>@<state key[:8]>-<object id>`, with `object`; a walk finding is one per task, id `<rule>@<state key[:8]>-<task id>`, with `task`. Each has `source`, `sev`, `text`, `marks`, `confidence` and `pins` (`{x, y, n}` in percent at each mark's box centre, `{x: 4, y: 4}` without marks), sorted by severity. With feature `examples` a critic finding also has `box` (`{x, y, w, h}` in viewport percent; without marks its pin sits at the box centre) and `example_ids`.
+- `scores.json`: `clarity` 0–100 per screen and for the app, `findability` (walk success rate × mean directness; `null` before walks; with feature `personas` the rate per task over all its walks), `naming` (share of objects with one name).
 - `needs_check.json`, and the collections `screens.json`, `objects.json`, `tasks.json` for the report.
+- Feature `seq` on: `W-friction` findings (source `seq`, one per state and task, id `W-friction@<8 hex>-<task id>`) on the state of every walk step rated SEQ ≤ `max_seq` or at least `min_drop` below the step before (rubric.json rule thresholds); `tasks.json` rows gain `seq` (per step, 1-7) and `sus` (0-100: 2.5 × Σ odd items x−1, even items 5−x; `null` without 10 valid answers); `scores.json` `app` gains `sus` (mean) and `sus_personas`; `diff.json.tasks` briefs carry `sus`. Off: none of these.
+- Feature `personas` n > 1: a task's walks are its base walk `walks/<task>.json` plus its variant walks `walks/<task>-<variant>.json`. `W-failed` fires when the task's success rate is at most `max_rate`, else `W-struggle` when at least `min_share` of its walks failed or struggled (rubric.json rule thresholds); the finding carries `rate` and `walks`, names who failed and sits where the first of them ended. A task with one walk keeps the single-walk text. `W-friction` covers every walk. `tasks.json` rows gain `walks`, `successes`, `rate`, `rate_ci` (Wilson 95 % interval, z = rubric.json `personas.wilson_z`), `clicks_median`, `clicks_range`, `ease_median`, with `seq` also `sus_mean` and `sus_range`; `scores.json` SUS counts every walk; `diff.json.tasks` briefs carry `walks`, `rate`, `rate_ci` (and `sus_mean`). n = 1: variant files are ignored and every output is the single-walk one.
+- Feature `saliency` on and `saliency.json` present: `R-salience` findings (source `saliency`, marked on the primary action) on each screen whose primary action ranks outside the top `top_frac` of its marks by `share`, or whose top mark has over `max_ratio` × the primary's `share` (rubric.json rule thresholds). Off: none.
+- Feature `mental_model` on and `mentalmodel.json` present: one `M-expectation` finding (source `mental`, id `M-expectation@<8 hex>-<kind>`, `violations`: the violation ids, `tasks` for walk ones; severity per kind from rubric.json) per state and violation kind, on the state the click led to; a walk step that left the crawled graph lands on its task's `target_state`, else the entry, and the text names the URL. A `naming` violation whose two names already are one object's labels, or a pair `synonyms.json` judged two different things, adds nothing. Undecided crawl matches go to `needs_check.json`. Off: none.
 
 With `--since` (the previous run's data dir) it also compares the two runs and writes `diff.json`: screens match by state key, else by route + kind + heading; a matched screen is **changed** past the rubric.json `since` thresholds (dHash bit distance, clarity delta, interactive-label Jaccard). `diff.json` = `{since, since_data, match: {<id>: <prev id>}, screens: {new, removed, changed: [{id, prev, dist, clarity_delta, jaccard}]}, objects: {new, removed, renamed}, tasks: {<id>: {prev, now}}, findings: {fixed, unverified, open, new}}`, and every finding in `findings.json` gets `status`: `open` when the same rule held on the matching previous screen (a walk finding: for the same task), else `new`. A previous finding that no longer fires is `fixed` only when this run looked again (its screen matched, or its task was walked again); on a screen this crawl did not reach it is `unverified`. It prints one `since` line with these counts.
 
@@ -221,7 +262,7 @@ const model = JSON.parse(await Bun.file(`${dataDir}/model.json`).text());
 const run = JSON.parse(await Bun.file(`${dataDir}/run.json`).text());
 const persona = (id) => model.personas.find((p) => p.id === id) || model.personas[0];
 const brief = (t) => [
-  `persona: ${JSON.stringify(persona(t.persona))}`,
+  `persona: ${JSON.stringify({ ...persona(t.persona), variants: undefined })}`,
   `task: ${JSON.stringify({ id: t.id, title: t.title })}`,
   `url: ${run.url}`, `mode: ${run.mode}`, `dataDir: ${dataDir}`, `helpers: ${helpers}`,
 ].join('\n');
@@ -245,20 +286,40 @@ for (const t of model.tasks) {
 }
 ```
 
-Critique: the eight states with the lowest clarity in `scores.json` (from step 7), lowest first, in one critic call, batch `c1`:
+With feature `personas` n > 1 the walker agent stays one per task; the other n-1 walkers of a task are its persona's `variants` (step 6), walked in this kernel by `walk.mjs` on `smol`, each playing its variant and writing `walks/<task id>-<variant id>.json` (with `variant`). `walkAll` runs them all, at most 2 at a time on a local app and 4 otherwise (rubric.json `personas.walk_concurrency`), and skips every walk whose file exists, so calling it again redoes only missing or deleted ones:
+
+```js
+const fan = await wk.walkAll({ ax, browser, completion, url: run.url, mode: run.mode, dataDir });   // n = 1: { walked: 0 }
+```
+
+`fan.errors` lists the walks that threw (`{task, variant, error}`); call `walkAll` once more for them.
+
+Critique: the eight states with the lowest clarity in `scores.json` (from step 7), lowest first, in one critic call, batch `c1`. `criticBrief` writes the prompt: without `examples` the bare `dataDir`/`states`/`batch` brief; with it, also the picked example critiques and, per state, the ids of the four matched to the judge's `screen_type` answer. The UICrit examples come without their RICO screenshots: the critic reads their text and box as the description, and the brief needs no image.
 
 ```js
 const scores = JSON.parse(await Bun.file(`${dataDir}/scores.json`).text());
 const worst = Object.entries(scores.screens).sort((a, b) => a[1] - b[1]).slice(0, 8).map(([id]) => id);
-const critic = await agent(`dataDir: ${dataDir}\nstates: ${JSON.stringify(worst)}\nbatch: c1`, { agent: 'app-explore-critic', label: 'critic-c1' });
+const critic = await agent(await ap.criticBrief({ dataDir, states: worst, batch: 'c1' }), { agent: 'app-explore-critic', label: 'critic-c1' });
 await critic.wait();
 ```
 
-Then run `analyze.py` again exactly as in step 7 (with `--since <since>` when set): it turns failed and struggling walks into `W-failed` / `W-struggle` findings (a wrong turn is a step with `confused: true`), the first-click check into `S-scent`, and the critique into `C-<n>` findings.
+Then run `analyze.py` again exactly as in step 7 (with `--since <since>` when set): it turns failed and struggling walks into `W-failed` / `W-struggle` findings (a wrong turn is a step with `confused: true`; with feature `personas` on each task's success rate over all its walks), steep SEQ drops into `W-friction` (feature `seq`), the first-click check into `S-scent`, and the critique into `C-<n>` findings (feature `examples`: with their `box` and `example_ids`; a critic finding with neither a box nor a known mark goes to `needs_check.json`).
 
 Read the walk answers as they come back. A walk that ended in `give-up` on the first screen with no marks usually means the page had not rendered or the session expired, not a usability problem: check `walks/<id>.json` `steps[0].url` and redo step 2 before believing it. A `W-failed` or `W-struggle` walk whose think-aloud (`steps[].think`, `survey.comment`) talks about loading, a blank or empty screen, a spinner or "taking too long" measured load time, not usability: delete its `walks/<id>.json`, redo that walk alone (one walker, no other walk running) and re-run `analyze.py` before believing it. Any new line in `leaks.jsonl` after the walks in readonly mode: stop and show it to the user, as in step 4. Recompute `procs` (step 4) after the walks: the walkers' passive writes land in `passive.jsonl` too.
 
-**Done when** `walks/` has one file per task in `model.json` (each with `steps`, `success`, `clicks`, `survey`), no `W-failed`/`W-struggle` finding rests on a walk whose think-aloud blames loading, `critique/c1.json` is a JSON array of findings with `state`, `rule` `C-1`…`C-10`, `sev`, `marks` and `confidence`, the re-run `findings.json` contains `W-*`, `S-scent` or `C-*` findings where the walks and critique gave reason, `leaks.jsonl` is empty in readonly mode, every tab this step opened in this kernel is closed, and in readonly mode the chat shows the user the distinct passive write procedures of the whole run (`procs`, method + path, count), or "no passive writes".
+**Done when** `walks/` has one file per task in `model.json` (each with `steps`, `success`, `clicks`, `survey`) and, with feature `personas` n > 1, one per task and variant of its persona (n-1 per task) after the second `walkAll` at the latest, no `W-failed`/`W-struggle` finding rests on a walk whose think-aloud blames loading, `critique/c1.json` is a JSON array of findings with `state`, `rule` `C-1`…`C-10`, `sev`, `marks` and `confidence` (feature `examples`: also `box` and `example_ids` on every finding), the re-run `findings.json` contains `W-*`, `S-scent` or `C-*` findings where the walks and critique gave reason, `leaks.jsonl` is empty in readonly mode, every tab this step opened in this kernel is closed, and in readonly mode the chat shows the user the distinct passive write procedures of the whole run (`procs`, method + path, count), or "no passive writes".
+
+## 8b. Walks into the mental model (feature `mental_model` only)
+
+The walks show what a user expected before each click (`expected`) and what happened (`outcome`). `mentalModel` with `pass: 'walks'` restarts from the crawl's model (`after_crawl`) and feeds the base walks in turn (`walks/<task>.json`; persona variants with a `variant` field are skipped, so the model stays one person's and the cap goes to the base walks), at most `mental.max_walk_steps` steps in all: an `as-expected` / `unexpected` outcome decides the match directly, the judge decides free-text outcomes (`mental_match`), `blocked` steps count for nothing, and one `smol` update per walk (`mental_update`) adds the walk's concepts and the kind of every miss. It keeps the crawl part of the timeline and violations and rewrites the walk part, so it is safe to repeat after a walk is redone.
+
+```js
+const mw = await ap.mentalModel({ judgeBatch, completion }, { dataDir, pass: 'walks' });   // { walks, steps, concepts, violations, walk_violations, errors }
+```
+
+Then run `analyze.py` again exactly as in step 7: walk violations become `M-expectation` findings with their task.
+
+**Done when** `mentalmodel.json` has a `walks` entry (`fed` = the walk files with expectations), one `timeline` entry per fed walk (source `walk`), `mw.errors` is 0, and the re-run `findings.json` holds an `M-expectation` finding for every violation whose state or task resolves.
 
 ## 9. Report
 
@@ -274,18 +335,23 @@ python3 <skill dir>/compose.py <reports dir>/<stem>.data <reports dir>/<stem>.me
 |---|---|---|
 |`objects_table`|table|every object: class badge, how it is shown, other names, home screens, finding count|
 |`naming_table`|table|objects shown under more than one name|
-|`tasks_table`|table|every task: persona, object, target screen, shortest path, first click, walk result, clicks, ease|
+|`tasks_table`|table|every task: persona, object, target screen, shortest path, first click, walk result, clicks, ease; feature `seq`: SUS (with `since`: "now (was prev)"); feature `personas` n > 1: walk result as successes/walks with the 95 % interval ("2/3 (21-94 %)"), clicks as median (range), median ease, SUS as mean (range), with `since` the previous successes/walks and SUS as "now (was prev)"|
+|`seq_tabs`|tabs|feature `seq` only: per walked task a `bars` chart of its steps' SEQ 1-7, red at or below the `W-friction` threshold|
 |`cta_tabs`|tabs|per object its attributes, related objects and actions with their screens|
 |`nav_map`|map|screens as boxes (dialogs and menus dotted), clicks as edges|
 |`depth_bars`|bars|screens per click depth|
-|`scent_table`|table|per task the predicted first click against the first click of the shortest path|
+|`scent_table`|table|per task the predicted first click against the first click of the shortest path; with `scent_path` one row per path step (`Step` column), `too early` for `S-premature`|
+|`mental_growth`|bars|feature `mental_model` only: concepts a first-time user knows after each crawl click and each walk, red where the step broke an expectation (its `p` says so)|
+|`mental_table`|table|feature `mental_model` only: every violation with kind, crawl or task step, the screen it happened on (links to its gallery shot and pins) and its `M-expectation` finding|
 |`scorecard_table`|table|per screen, least clear first: clarity and every rubric answer (`(?)` = under the confidence gate)|
 |`rubric_bars`|bars|findings per rule, coloured by their worst severity|
 |`findings_tree`|tree|every finding, filtered by severity|
 |`findings_data`|data|every finding, sortable, with evidence and confidence|
 |`screens_gallery`|gallery|one item per state in BFS order, badges screen type and clarity band, one numbered note per finding linking to its tree row|
+|`saliency_gallery`|gallery|feature `saliency` only: one heatmap per scored state, caption the primary action's attention rank, notes its `R-salience` findings; a gallery of its own, so `screens_gallery`'s Before/Now toggle stays the `since` comparison|
 |`needs_check_table`|table|answers too unsure to count: "needs a human look"|
 |`status_table`|table|with `since` only: findings per severity fixed / still open / new / not re-checked, plus a total row|
+|`run_details`|table|what the run used that the report must name: with feature `examples` and a critique, the critic's example bank and its UICrit attribution (CC BY 4.0); with feature `saliency`, the attention model and its sources, or `saliency_error`|
 
 A block whose data is empty (no naming conflict, no task, nothing unsure) is not in `blocks.json`; its section says so in one sentence instead.
 
@@ -314,17 +380,17 @@ unchanged, by name, in this order; the prose (`p`, `callout`, `argument`) is you
 - lede (no question): `callout` tone `answer` with the verdict, then `argument`: claim = the verdict, reasons = the three fixes
   that remove the most severe findings, each linking one finding [[f-…]], conclusion = what to do first.
 - q1: objects_table, naming_table
-- q2: tasks_table, cta_tabs
-- q3: nav_map, depth_bars, scent_table
+- q2: tasks_table, seq_tabs, cta_tabs
+- q3: nav_map, depth_bars, scent_table, mental_growth, mental_table
 - q4: scorecard_table, rubric_bars, needs_check_table
 - q5: findings_tree, findings_data
-- q6: screens_gallery
+- q6: screens_gallery, saliency_gallery, run_details (its `p` says these are the run's sources)
 - q7 (since only): status_table; its `p` names the screen counts (new, removed, changed) and finding counts (fixed, open, new,
   and unverified as "not re-checked": on screens this run did not reach, so neither fixed nor open)
-  from <stem>.data/diff.json, and the tasks whose walk result changed (`diff.json.tasks`, prev against now).
+  from <stem>.data/diff.json, and the tasks whose walk result or SUS changed (`diff.json.tasks`, prev against now).
 A block missing from blocks.json: drop it and say in one sentence why (for example "no object goes by two names").
 Evidence: quote walkers' think-aloud lines verbatim in quotes from <stem>.data/walks/<task>.json (`steps[].think`, `survey.comment`),
-in q2 and in the fixes they support. App-wide scores come from scores.json `app` (clarity 0-100, findability and naming 0-1).
+in q2 and in the fixes they support. App-wide scores come from scores.json `app` (clarity 0-100, findability and naming 0-1, SUS 0-100 when present; 68 is the published average).
 Name each `stats` number once in prose. Never invent a screen, object, finding or number that is not in the data dir.
 Build: python3 <report skill dir>/build.py <stem>.json <stem>.html --check-choice <stem>.choice.json --strict
 Verify per report step 9, including the gallery checks: a thumbnail click opens #gl-dlg with its pins and notes, ←/→ moves,
@@ -336,4 +402,4 @@ Return the verdict, the three fixes, the autopilot chat line and the step-9 resu
 
 When it returns, `open <reports dir>/<stem>.html` and answer in chat: the verdict, the three fixes, the report as a Markdown link with an absolute `file://` URL, and the subagent's autopilot chat line.
 
-**Done when** the build printed `lint: 0 findings` with `--check-choice` and `--strict`; the gallery item count equals the state count of `graph.json` (plus `diff.json.screens.removed` with since); the lede names a verdict and three fixes; at least one walk think-aloud line is quoted; the subagent reports report step 9 passed, including the gallery checks and `scrollWidth <= 1280` at 1280 px; and the chat answer carries the file link.
+**Done when** the build printed `lint: 0 findings` with `--check-choice` and `--strict`; the `screens_gallery` item count equals the state count of `graph.json` (plus `diff.json.screens.removed` with since); the lede names a verdict and three fixes; at least one walk think-aloud line is quoted; the subagent reports report step 9 passed, including the gallery checks and `scrollWidth <= 1280` at 1280 px; and the chat answer carries the file link.

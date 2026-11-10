@@ -1,7 +1,7 @@
 spec_version: "0.2"
 name: "app-explore-critic"
 version: 0.1.0
-description: "Slow visual critic for app-explore: reviews the given screens' screenshots and data against Nielsen's 10 heuristics and OOUX consistency and writes critique/<batch>.json findings with marks, severity and confidence."
+description: "Slow visual critic for app-explore: reviews the given screens' screenshots and data against Nielsen's 10 heuristics and OOUX consistency, guided by example critiques when the brief has them, and writes critique/<batch>.json findings with marks, boxes, severity and confidence."
 lifecycle: standing
 model:
   preferred: "@slow"

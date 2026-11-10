@@ -1,0 +1,132 @@
+{
+  "attribution": {
+    "uicrit": "Examples with source uicrit:<rico_id> are adapted from UICrit (Peitong Duan, Chin-Yi Cheng, Gang Li, Bjoern Hartmann, Yang Li: UICrit: Enhancing Automated Design Evaluation with a UI Critique Dataset, UIST '24, https://doi.org/10.1145/3654777.3676381), https://github.com/google-research-datasets/uicrit, licensed CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Changes: human comments condensed and reworded into problem + consequence, a Nielsen rule, a severity and a why_good note added, bounding boxes converted from normalised [x1, y1, x2, y2] to percent {x, y, w, h}. No RICO screenshots are included.",
+    "app-explore": "Examples with source app-explore:<run>/<finding id> are confirmed critic findings of our own app-explore runs; box in viewport percent of that run's screenshot."
+  },
+  "examples": [
+    {
+      "id": "u-settings-back",
+      "screen_type": "settings",
+      "rule": "C-3",
+      "sev": 2,
+      "text": "The weather-notification settings screen has no back button in its top-left header (box); a user who opened it by mistake or is done has no visible way to return to the previous screen.",
+      "box": {"x": 1.6, "y": 5.4, "w": 19.0, "h": 4.2},
+      "why_good": "Names a missing element and still anchors it: the box marks where users look for it (the header's top-left), not an arbitrary spot.",
+      "source": "uicrit:10137"
+    },
+    {
+      "id": "u-form-primary",
+      "screen_type": "form",
+      "rule": "C-8",
+      "sev": 2,
+      "text": "On the registration pop-up, 'Register' and 'Cancel' share the same colour, size and weight (box); the eye finds no primary action and a hurried user may tap Cancel and lose what they typed.",
+      "box": {"x": 14.7, "y": 71.3, "w": 73.6, "h": 5.8},
+      "why_good": "Points at the exact pair of buttons and says what the user loses, not just that hierarchy is weak.",
+      "source": "uicrit:11896"
+    },
+    {
+      "id": "u-form-message",
+      "screen_type": "form",
+      "rule": "C-9",
+      "sev": 2,
+      "text": "Below the passenger counters of the flight search, the note 'To book for more than 10 adults, please visit our website' (box) gives no link and no next step; a group traveller is sent away without knowing where to go.",
+      "box": {"x": 6.0, "y": 90.8, "w": 84.9, "h": 2.9},
+      "why_good": "Quotes the message verbatim and judges it against what the user needs to do next.",
+      "source": "uicrit:2171"
+    },
+    {
+      "id": "u-list-icon",
+      "screen_type": "list",
+      "rule": "C-6",
+      "sev": 2,
+      "text": "An unlabelled 'X' icon sits at the top right of the caller-ID contact list (box); users cannot tell whether it closes the list, clears the search or removes caller ID, so they avoid it or guess.",
+      "box": {"x": 86.1, "y": 12.4, "w": 12.3, "h": 5.4},
+      "why_good": "One small element, one concrete confusion: the competing meanings a user would weigh.",
+      "source": "uicrit:10448"
+    },
+    {
+      "id": "u-dialog-buttons",
+      "screen_type": "dialog",
+      "rule": "C-4",
+      "sev": 2,
+      "text": "In the date-picker dialog, the 'One-way' and 'Set' buttons look exactly like the date cells around them (box); nothing marks them as buttons, so users do not see how to confirm their choice.",
+      "box": {"x": 9.0, "y": 63.9, "w": 82.5, "h": 7.9},
+      "why_good": "Explains why the controls are missed (they borrow another element's look) instead of saying 'buttons unclear'.",
+      "source": "uicrit:2173"
+    },
+    {
+      "id": "u-list-selected",
+      "screen_type": "list",
+      "rule": "C-1",
+      "sev": 2,
+      "text": "The location list shows no check mark or highlight on the currently selected location (box, the header area); a user who comes back cannot see which location the app is using.",
+      "box": {"x": 2.1, "y": 9.6, "w": 38.2, "h": 2.5},
+      "why_good": "Ties a missing status cue to the moment it hurts: returning to the screen later.",
+      "source": "uicrit:41744"
+    },
+    {
+      "id": "a-dashboard-error",
+      "screen_type": "dashboard",
+      "rule": "C-9",
+      "sev": 3,
+      "text": "A red toast at the bottom right of the dashboard reads 'Query failed: Skaile research is not available on this server' followed by a raw query key in JSON (box). The user learns nothing about what broke or what to do, and the developer payload makes the app look broken.",
+      "box": {"x": 70.3, "y": 80.6, "w": 27.8, "h": 16.3},
+      "why_good": "Quotes the visible message, names both harms (no recovery path, loss of trust) and boxes the toast, which carries no mark.",
+      "source": "app-explore:app-explore-localhost-2026-11-10-v3/C-9@e1ea0257"
+    },
+    {
+      "id": "a-dashboard-naming",
+      "screen_type": "dashboard",
+      "rule": "C-4",
+      "sev": 2,
+      "text": "The sidebar section is called \"Test's workspace\" (mark 4) but its add button is labelled 'New My space project' (mark 5), so one space carries two names. Users cannot tell whether 'My space' and the workspace are the same place a new project lands in.",
+      "box": {"x": 0.6, "y": 15.0, "w": 15.7, "h": 3.5},
+      "marks": [4, 5],
+      "why_good": "An OOUX consistency finding: both names quoted, both marks given, and the question the user is left with.",
+      "source": "app-explore:app-explore-localhost-2026-11-10-v3/C-4@e1ea0257"
+    },
+    {
+      "id": "a-dialog-status",
+      "screen_type": "dialog",
+      "rule": "C-1",
+      "sev": 3,
+      "text": "The Snake dialog opens straight to 'Game over, Score: 0' with no game ever played (box), and no text says how to steer. The user never sees a start state and cannot tell whether they lost or the game failed to start.",
+      "box": {"x": 36.7, "y": 29.1, "w": 26.6, "h": 42.3},
+      "why_good": "Reads the screen's state against what just happened (nothing), the core of system-status findings; boxed because the message has no mark.",
+      "source": "app-explore:app-explore-localhost-2026-11-10-v3/C-1@054b780e"
+    },
+    {
+      "id": "a-dialog-hidden-controls",
+      "screen_type": "dialog",
+      "rule": "C-6",
+      "sev": 2,
+      "text": "The Up/Left/Down/Right buttons (marks 1-4) are invisible: their hit areas sit over the 'Top 10 in your organization' and 'Loading high scores…' text. A mouse or touch user cannot see the controls the dialog depends on, and clicking the leaderboard text moves the snake.",
+      "box": {"x": 45.3, "y": 71.0, "w": 9.4, "h": 9.8},
+      "marks": [1, 2, 3, 4],
+      "why_good": "Uses the Set-of-Mark overlay as evidence: marks where nothing is drawn reveal controls a user cannot see.",
+      "source": "app-explore:app-explore-localhost-2026-11-10-v3/C-6@054b780e"
+    },
+    {
+      "id": "a-menu-help",
+      "screen_type": "dialog",
+      "rule": "C-10",
+      "sev": 2,
+      "text": "The user menu's 'Expert mode' and 'Playful mode' toggles (marks 8-11) change app behaviour with a single click and give no hint of what each mode changes. A first-time user either avoids them or flips them blindly.",
+      "box": {"x": 17.3, "y": 66.0, "w": 19.2, "h": 8.0},
+      "marks": [8, 9, 10, 11],
+      "why_good": "Names the controls, what is missing (a hint) and both ways a newcomer reacts.",
+      "source": "app-explore:app-explore-localhost-2026-11-10-v3/C-10@8b0e33f3"
+    },
+    {
+      "id": "a-menu-mixed",
+      "screen_type": "dialog",
+      "rule": "C-8",
+      "sev": 2,
+      "text": "The organization '…' menu mixes an action (New project, mark 2), whole-app navigation (Flows, Run groups, Sessions, Store, Schedules, marks 3-7) and settings in one list. Main sections hidden behind a three-dot overflow on the org name are hard to discover.",
+      "box": {"x": 1.5, "y": 17.8, "w": 14.3, "h": 23.2},
+      "marks": [2, 3, 4, 5, 6, 7],
+      "why_good": "Groups the items by what they are and shows the mix is the problem, with every mark accounted for.",
+      "source": "app-explore:app-explore-localhost-2026-11-10-v3/C-8@196350d5"
+    }
+  ]
+}

@@ -103,12 +103,28 @@
   "scent": {
     "type": "choice",
     "instructions": "The image shows the start screen of a web app; numbered boxes mark its interactive elements and the state lists them. The state names a persona and a task. Which numbered element would this persona click first to get the task done?",
-    "max_marks": 30
+    "max_marks": 30,
+    "chunk_size": 8,
+    "path_instructions": "The image shows one screen of a web app; numbered boxes mark its interactive elements. The state names a persona, a task, the step of the task and what the persona clicked to get here. The persona scans this screen in reading order, a few elements at a time: the state lists only the current group, each as 'letter = mark number: role \"label\"'; ignore every other numbered box. Which letter would this persona click now to get on with the task? Answer next when none of the listed elements looks right and the persona would read on; when more_marks_after_this is false, next means the persona would click nothing on this screen."
   },
   "synonyms": {
     "type": "bool",
     "instructions": "The state names two labels a web app shows on different screens, with the screens they appear on. True only when both are names for the same kind of thing, one object type under two names (e.g. 'Invite' and 'Invitation'). False when one is a part, setting, link or list of the other, or the name of one particular item (e.g. 'Organization settings' for 'Organization', 'Acme / Main' for 'Workspace').",
     "max_pairs": 40
+  },
+  "mental": {
+    "max_edges": 40,
+    "max_walk_steps": 60,
+    "prompt_concepts": 40,
+    "match": {
+      "type": "bool",
+      "instructions": "A first-time user of a web app clicked the control named in the state (`clicked`, on screen `from`) and said beforehand what it would show (`predicted`: kind of screen, heading, object, purpose). `observed` and the image show what it actually showed. True when the prediction got the gist right: the same object or purpose, a similar kind of screen; other wording is fine. False when this user would be surprised: another object or purpose, or a menu or dialog where a page with content was expected (or the other way round).",
+      "criteria": { "true": "the user finds what they expected", "false": "the user is surprised by what appears" }
+    },
+    "walk_match": {
+      "type": "bool",
+      "instructions": "A user of a web app performed the step in the state and wrote beforehand what they expected (`expected`) and afterwards what happened (`outcome`). True when the outcome is what they expected, false when it surprised them or nothing happened."
+    }
   },
   "rules": [
     { "id": "R-hierarchy", "source": "rubric", "q": "hierarchy", "lt": 1.25, "sev": 3,
@@ -139,6 +155,9 @@
     { "id": "R-icon-only", "source": "rubric", "q": "icon_only", "is": true, "sev": 2,
       "label": { "en": "Icon-only actions", "de": "Aktionen nur als Icon" },
       "text": "Important actions are icons without a text label or tooltip." },
+    { "id": "R-salience", "source": "saliency", "top_frac": 0.2, "max_ratio": 2, "sev": 2,
+      "label": { "en": "Primary action draws little attention", "de": "Hauptaktion zieht wenig Aufmerksamkeit" },
+      "text": "The predicted first look misses the primary action:" },
     { "id": "G-overflow", "source": "geometry", "field": "overflow", "sev": 2,
       "label": { "en": "Text overflows its box", "de": "Text läuft über" },
       "text": "Content overflows its container and is cut off or scrolls sideways." },
@@ -151,18 +170,39 @@
     { "id": "N-naming", "source": "naming", "min_labels": 2, "sev": 3,
       "label": { "en": "One object, several names", "de": "Ein Objekt, mehrere Namen" },
       "text": "One object goes by several names (OOUX P13)." },
+    { "id": "M-expectation", "source": "mental", "kind": "expectation", "sev": 2,
+      "label": { "en": "Breaks a first-time user's expectation", "de": "Widerspricht der Erwartung neuer Nutzer" },
+      "text": "A first-time user expected something else from this click." },
+    { "id": "M-expectation", "source": "mental", "kind": "affordance", "sev": 2,
+      "label": { "en": "Breaks a first-time user's expectation", "de": "Widerspricht der Erwartung neuer Nutzer" },
+      "text": "The control looked like it would do one thing and did another." },
+    { "id": "M-expectation", "source": "mental", "kind": "location", "sev": 1,
+      "label": { "en": "Breaks a first-time user's expectation", "de": "Widerspricht der Erwartung neuer Nutzer" },
+      "text": "Something turned up where a first-time user did not expect it." },
+    { "id": "M-expectation", "source": "mental", "kind": "naming", "sev": 2,
+      "label": { "en": "Breaks a first-time user's expectation", "de": "Widerspricht der Erwartung neuer Nutzer" },
+      "text": "The app's names mislead: one thing under two names, or one name for two things." },
     { "id": "D-depth", "source": "depth", "gt": 4, "sev": 2,
       "label": { "en": "Task buried deep", "de": "Aufgabe tief versteckt" },
       "text": "The task's target screen is more than 4 clicks from the start." },
-    { "id": "W-failed", "source": "walk", "success": false, "sev": 4,
+    { "id": "W-failed", "source": "walk", "success": false, "max_rate": 0.5, "sev": 4,
       "label": { "en": "Task walk failed", "de": "Aufgabe nicht geschafft" },
-      "text": "The persona could not finish the task." },
-    { "id": "W-struggle", "source": "walk", "success": true, "min_wrong_turns": 2, "max_ease": 2, "sev": 3,
+      "text": "The persona could not finish the task.",
+      "rate_text": "Half or more of the personas could not finish the task." },
+    { "id": "W-struggle", "source": "walk", "success": true, "min_wrong_turns": 2, "max_ease": 2, "min_share": 0.3, "sev": 3,
       "label": { "en": "Task walk with detours", "de": "Aufgabe mit Umwegen" },
-      "text": "The persona finished the task but struggled." },
+      "text": "The persona finished the task but struggled.",
+      "rate_text": "Some personas failed the task or finished it only with detours." },
+    { "id": "W-friction", "source": "seq", "max_seq": 3, "min_drop": 3, "sev": 2,
+      "label": { "en": "Hard step in a task walk", "de": "Schwerer Schritt in einer Aufgabe" },
+      "text": "The persona rated this step hard (SEQ 1-7) or much harder than the step before." },
     { "id": "S-scent", "source": "scent", "correct": false, "sev": 2,
       "label": { "en": "Wrong first click", "de": "Falscher erster Klick" },
-      "text": "First click goes astray: the persona would start somewhere else than the path to the task." },
+      "text": "First click goes astray: the persona would start somewhere else than the path to the task.",
+      "path_text": "Click goes astray: the persona would leave the path to the task here." },
+    { "id": "S-premature", "source": "scent", "premature": true, "sev": 2,
+      "label": { "en": "Wrong click before the right one", "de": "Falscher Klick vor dem richtigen" },
+      "text": "Click taken too early: scanning in reading order, the persona picks a wrong element before reaching the one on the path." },
     { "id": "X-write-leak", "source": "leak", "mode": "readonly", "sev": 4,
       "label": { "en": "Write reached the server", "de": "Schreibzugriff erreichte den Server" },
       "text": "A write request reached the server during a readonly run." }
@@ -177,5 +217,28 @@
     "icon_only": { "values": { "true": 0, "false": 1 } }
   },
   "bands": { "good": 75, "fair": 50 },
-  "since": { "hash_bits": 10, "clarity_delta": 10, "jaccard": 0.8 }
+  "since": { "hash_bits": 10, "clarity_delta": 10, "jaccard": 0.8 },
+  "seq": {
+    "question": "Overall, how difficult or easy was this step? 1 = very difficult, 7 = very easy.",
+    "sus_scale": "1 = strongly disagree, 5 = strongly agree",
+    "sus_items": [
+      "I think that I would like to use this system frequently.",
+      "I found the system unnecessarily complex.",
+      "I thought the system was easy to use.",
+      "I think that I would need the support of a technical person to be able to use this system.",
+      "I found the various functions in this system were well integrated.",
+      "I thought there was too much inconsistency in this system.",
+      "I would imagine that most people would learn to use this system very quickly.",
+      "I found the system very cumbersome to use.",
+      "I felt very confident using the system.",
+      "I needed to learn a lot of things before I could get going with this system."
+    ]
+  },
+  "personas": {
+    "literacy": ["low", "medium", "high"],
+    "domain": ["none", "some", "expert"],
+    "variant_text": "A variant is the same role played by a different person: vary digital literacy (low: unsure with web apps, reads every label, avoids icons; high: scans, tries shortcuts), hurry (true: skims and clicks the first plausible thing) and prior domain knowledge (none: does not know the field's words; expert: expects its usual terms and places). Spread the variants: no two alike, at least one with low literacy or no domain knowledge.",
+    "walk_concurrency": { "local": 2, "remote": 4 },
+    "wilson_z": 1.96
+  }
 }
