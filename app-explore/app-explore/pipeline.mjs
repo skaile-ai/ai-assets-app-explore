@@ -1,7 +1,8 @@
-// Perception, ontology synthesis and first-click scent for app-explore, run from an omp JavaScript eval cell.
+// Perception, ontology synthesis, synonym checks and first-click scent for app-explore, run from an omp JavaScript eval cell.
 //   const ap = await import(`${helpers}/pipeline.mjs`);   // helpers = this skill's dir, see SKILL.md
 //   await ap.perceive({ judgeBatch, completion }, { dataDir });
 //   await ap.synthesize({ completion }, { dataDir });
+//   await ap.synonyms({ judgeBatch }, { dataDir });
 //   await ap.scent({ judgeBatch }, { dataDir });
 // Module code cannot see eval prelude globals: the model helpers are passed in. Questions live in rubric.json.
 import { readdir, readFile, writeFile } from 'node:fs/promises';
@@ -198,7 +199,7 @@ const MODEL_SCHEMA = {
     }, required: ['id', 'name', 'aliases', 'class', 'attributes', 'relationships', 'ctas', 'homes', 'representations'] } },
     tasks: { type: 'array', items: { type: 'object', properties: {
       id: { type: 'string' }, title: { type: 'string' }, persona: { type: 'string' },
-      object: { type: 'string' }, verb: { type: 'string' }, target_state: { type: 'string' },
+      object: { type: 'string' }, verb: { type: 'string' }, target_state: { type: ['string', 'null'] },
     }, required: ['id', 'title', 'persona', 'object', 'verb', 'target_state'] } },
   },
   required: ['personas', 'objects', 'tasks'],
@@ -223,7 +224,7 @@ Rules:
 - tasks: at most 6, ids t1…t6, favouring create, find and edit of core objects; persona = a persona id; object = an object id; target_state = the existing state id where the task is done (for create/edit: where its form opens).
 - Every state id you use must be one of the state ids below. Object ids: lowercase slugs.
 - Write names, goals and task titles in the app's UI language (${lang}).
-${prev ? `\nA previous run of this app produced the model below. Its state ids belong to the previous crawl and mean nothing here: take every state id from the states below. Keep its persona and object ids for the same things. Keep every previous task with its id, persona and title, pick its target_state among the states below, and drop it only when no state below lets a user do it; new tasks get the next free ids (at most 2 new tasks; the 6-task cap does not apply to kept tasks). New things get new ids.\n${JSON.stringify(prev)}\n` : ''}
+${prev ? `\nA previous run of this app produced the model below. Its state ids belong to the previous crawl and mean nothing here: take every state id from the states below. Keep its persona and object ids for the same things. Its tasks are kept as they are: do not list them again. Add at most 2 new tasks with the next free ids (the 6-task cap does not count the previous tasks). New things get new ids.\n${JSON.stringify(prev)}\n` : ''}
 States (crawl order, depth = clicks from the start):
 ${JSON.stringify(states)}
 
@@ -232,11 +233,32 @@ ${edges}`;
 }
 
 /**
+ * {previous state id: current state id}, one to one: by state key, else by route + kind + heading (analyze.py's
+ * screen match for diff.json).
+ */
+function matchStates(prevStates, states) {
+  const out = {};
+  const used = new Set();
+  for (const sig of [(s) => s.key, (s) => `${s.route}|${s.kind}|${norm(s.heading)}`]) {
+    const index = new Map();
+    for (const p of prevStates) if (!Object.hasOwn(out, p.id)) index.set(sig(p), [...(index.get(sig(p)) ?? []), p.id]);
+    for (const s of states) {
+      if (used.has(s.id)) continue;
+      const pid = (index.get(sig(s)) ?? []).find((p) => !Object.hasOwn(out, p));
+      if (pid) { out[pid] = s.id; used.add(s.id); }
+    }
+  }
+  return out;
+}
+
+/**
  * Synthesise personas, objects and tasks across all screens with the slow model. Writes <data>/model.json after
- * dropping objects without a `homes` state in graph.json and tasks whose `target_state` is missing.
+ * dropping objects without a `homes` state in graph.json and new tasks whose `target_state` is missing.
  * `prev` = a previous run's model.json (keeps ids stable); by default read from run.json `since` (the previous
- * run's data dir). Its state references are stripped before prompting. `kept.missing` lists previous task ids the
- * new model lost.
+ * run's data dir). Its state references are stripped before prompting. Every previous task stays in the model so it
+ * is walked again, and its target is never the model's pick: it is the current state matching its previous target
+ * (by state key, else route + kind + heading, as diff.json matches screens), else `null` with
+ * `target_missing: true`. model.json `kept` = `{ids, missing}`: the previous task ids and those without a target.
  */
 export async function synthesize({ completion }, { dataDir, prev = undefined }) {
   const t0 = Date.now();
@@ -245,6 +267,7 @@ export async function synthesize({ completion }, { dataDir, prev = undefined }) 
   let run = {};
   try { run = await readJson(join(dataDir, 'run.json')); } catch {}
   if (prev === undefined) prev = run.since ? await readJson(join(run.since, 'model.json')).catch(() => null) : null;
+  const prevGraph = prev && run.since ? await readJson(join(run.since, 'graph.json')).catch(() => null) : null;
   const brief = prev && {
     personas: prev.personas,
     objects: prev.objects.map(({ id, name, aliases, class: cls }) => ({ id, name, aliases, class: cls })),
@@ -254,7 +277,7 @@ export async function synthesize({ completion }, { dataDir, prev = undefined }) 
   if (r.error) throw new Error(`synthesize: ${r.error}`);
   const m = r.value;
   const ids = new Set(graph.states.map((s) => s.id));
-  const before = { objects: m.objects.length, tasks: m.tasks.length };
+  const before = { objects: m.objects.length };
   for (const o of m.objects) {
     o.homes = o.homes.filter((h) => ids.has(h));
     o.representations = o.representations.filter((x) => ids.has(x.state));
@@ -264,14 +287,94 @@ export async function synthesize({ completion }, { dataDir, prev = undefined }) 
   m.objects = m.objects.filter((o) => o.homes.length);
   const objIds = new Set(m.objects.map((o) => o.id));
   for (const o of m.objects) o.relationships = o.relationships.filter((x) => objIds.has(x.to));
-  m.tasks = m.tasks.filter((t) => ids.has(t.target_state));
+  const prevIds = new Set(prev ? prev.tasks.map((t) => t.id) : []);
+  const fresh = m.tasks.filter((t) => !prevIds.has(t.id));
+  const lost = fresh.filter((t) => !ids.has(t.target_state)).length;
+  m.tasks = fresh.filter((t) => ids.has(t.target_state));
+  if (prev) {
+    const now = prevGraph ? matchStates(prevGraph.states, graph.states) : {};
+    const kept = prev.tasks.map(({ target_missing: _, ...p }) => {
+      const target = now[p.target_state] ?? null;
+      return { ...p, target_state: target, ...(target ? {} : { target_missing: true }) };
+    });
+    m.tasks = [...kept, ...m.tasks];
+    m.kept = { ids: kept.map((t) => t.id), missing: kept.filter((t) => t.target_missing).map((t) => t.id) };
+  }
   await writeJson(join(dataDir, 'model.json'), m);
-  const taskIds = new Set(m.tasks.map((t) => t.id));
   return {
     personas: m.personas.length, objects: m.objects.length, tasks: m.tasks.length,
-    dropped: { objects: before.objects - m.objects.length, tasks: before.tasks - m.tasks.length },
-    kept: prev ? { tasks: prev.tasks.filter((t) => taskIds.has(t.id)).length, missing: prev.tasks.filter((t) => !taskIds.has(t.id)).map((t) => t.id) } : null,
+    dropped: { objects: before.objects - m.objects.length, tasks: lost },
+    kept: m.kept ?? null,
     ms: Date.now() - t0,
+  };
+}
+
+// ---------------------------------------------------------------- synonyms
+
+const tokens = (s) => new Set(norm(s).split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3));
+const sharesToken = (a, b) => { const x = tokens(a); return [...tokens(b)].some((w) => x.has(w)); };
+
+/**
+ * Cheap-judge check of names the naming rule would otherwise take on the slow model's word: per pair "do both name
+ * the same thing?" (rubric.json `synonyms`, a bool question under the gate). Candidate pairs, in this order, capped at
+ * `synonyms.max_pairs`: `alias` (an object's name and each alias synthesize gave it), `objects` (two objects whose
+ * names share a word of 3+ letters), `label` (an object name the per-screen extraction used that is no model name or
+ * alias, and an object's name sharing a word with it). Writes <data>/synonyms.json `[{id, kind, object, other, a, b,
+ * states_a, states_b, answer}]` (`answer` `{bool}`, null when unjudged); analyze.py's naming rule reads it. A judge
+ * that dies wholesale leaves every answer null and returns `judge_error`: naming then rests on the model alone.
+ */
+export async function synonyms({ judgeBatch }, { dataDir, concurrency = 16 }) {
+  const t0 = Date.now();
+  const { graph, rubric } = await load(dataDir);
+  const model = await readJson(join(dataDir, 'model.json'));
+  const perceived = await readJson(join(dataDir, 'perceive.json'));
+  const screenName = Object.fromEntries(graph.states.map((s) => [s.id, s.heading || s.title || s.id]));
+  const seen = new Map(); // normalized extracted object name → {label, states}
+  for (const s of graph.states) {
+    for (const o of perceived[s.id]?.extract?.objects ?? []) {
+      const k = norm(o.name);
+      if (!k) continue;
+      if (!seen.has(k)) seen.set(k, { label: o.name, states: new Set() });
+      seen.get(k).states.add(s.id);
+    }
+  }
+  const where = (label, fallback = []) => [...(seen.get(norm(label))?.states ?? fallback)];
+  const pairs = [];
+  const add = (p) => {
+    if (sameWord(p.a, p.b)) return;
+    if (pairs.some((q) => (sameWord(q.a, p.a) && sameWord(q.b, p.b)) || (sameWord(q.a, p.b) && sameWord(q.b, p.a)))) return;
+    pairs.push(p);
+  };
+  for (const o of model.objects) {
+    for (const al of o.aliases) add({ kind: 'alias', object: o.id, other: null, a: o.name, b: al, states_a: where(o.name, o.homes), states_b: where(al) });
+  }
+  model.objects.forEach((o, i) => {
+    for (const p of model.objects.slice(i + 1)) {
+      if (sharesToken(o.name, p.name)) add({ kind: 'objects', object: o.id, other: p.id, a: o.name, b: p.name, states_a: where(o.name, o.homes), states_b: where(p.name, p.homes) });
+    }
+  });
+  const known = model.objects.flatMap((o) => [o.name, ...o.aliases]);
+  for (const { label, states } of seen.values()) {
+    if (known.some((k) => sameWord(k, label))) continue;
+    for (const o of model.objects) {
+      if (sharesToken(o.name, label)) add({ kind: 'label', object: o.id, other: null, a: o.name, b: label, states_a: where(o.name, o.homes), states_b: [...states] });
+    }
+  }
+  const list = pairs.slice(0, rubric.synonyms.max_pairs).map((p, i) => ({ id: `y${i + 1}`, ...p }));
+  const screens = (ids) => ids.slice(0, 6).map((id) => screenName[id] ?? id);
+  const states = Object.fromEntries(list.map((p) => [p.id, { a: p.a, a_screens: screens(p.states_a), b: p.b, b_screens: screens(p.states_b) }]));
+  const question = { same: { type: rubric.synonyms.type, instructions: rubric.synonyms.instructions } };
+  let items = {}, error = null;
+  if (list.length) {
+    try {
+      items = await drainAll(await judgeBatch(states, question, { concurrency, intent: 'app-explore synonyms' }));
+    } catch (e) { error = String(e?.message || e); }
+  }
+  const out = list.map((p) => ({ ...p, answer: items[p.id]?.ok ? items[p.id].answers.same : null }));
+  await writeJson(join(dataDir, 'synonyms.json'), out);
+  return {
+    pairs: out.length, candidates: pairs.length, judged: out.filter((p) => p.answer).length, ms: Date.now() - t0,
+    ...(error ? { judge_error: error } : {}),
   };
 }
 
@@ -357,6 +460,7 @@ export async function scent({ judgeBatch }, { dataDir, concurrency = 16, answers
   }
   const fromEntry = graph.edges.filter((e) => e.from === entry.id);
   const urlOf = Object.fromEntries(graph.states.map((s) => [s.id, s.url]));
+  const offered = new Set(marks.map((m) => m.n));
   for (const t of model.tasks) {
     const a = items[t.id]?.ok ? items[t.id].answers.first_click : null;
     const d = distTo(graph, t.target_state);
@@ -372,9 +476,11 @@ export async function scent({ judgeBatch }, { dataDir, concurrency = 16, answers
       first_marks: firsts,
       first_labels: [...new Set(firstEdges.map((e) => e.label).filter(Boolean))],
       clicks,
-      // null: no prediction, target is the entry itself, or unreachable. A path whose first control has no mark on
-      // the entry screenshot (e.g. below the fold) counts as a miss: the persona cannot pick it.
-      correct: predicted == null || !clicks ? null : firsts.includes(predicted),
+      // null: no prediction, target is the entry itself, unreachable, or every first control of the path has a mark
+      // the judge was not offered (beyond max_marks). A path whose first control has no mark on the entry screenshot
+      // at all (e.g. below the fold) counts as a miss: the persona cannot pick it.
+      correct: predicted == null || !clicks || (firsts.length && !firsts.some((n) => offered.has(n))) ? null
+        : firsts.includes(predicted),
       ...(a ? {} : { error: String(items[t.id]?.error ?? 'not judged') }),
     };
   }

@@ -37,7 +37,7 @@ Nielsen's 10 heuristics; the rule id of a finding is `C-<number>`:
 
 Severity `sev` 0–4 (Nielsen): 0 not a problem, 1 cosmetic, 2 minor (slows users down), 3 major (users fail or err often), 4 catastrophe (blocks the task). `confidence` 0–1: how sure you are a real user hits this, from what the screenshot shows; under 0.5 when you guess at behaviour you could not see.
 
-Every finding names the screen element by its mark numbers. A finding without a visible element to point at (a missing back link, a missing empty-state hint) gets `marks: []`. Write `text` as one or two plain sentences: the problem as the user meets it, then why it hurts. Two to six findings per screen; none is a valid answer for a clean screen. No praise, no generic advice, no duplicates of geometry checks.
+Every finding names the screen element by its mark numbers. A finding without a visible element to point at (a missing back link, a missing empty-state hint) gets `marks: []`. Write `text` as one or two plain sentences: the problem as the user meets it, then why it hurts. Up to six findings per screen; none is a valid answer for a clean screen. No praise, no generic advice, no duplicates of geometry checks.
 
 ## Output
 

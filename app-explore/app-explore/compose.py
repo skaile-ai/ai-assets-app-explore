@@ -6,7 +6,8 @@
 Reads graph.json, perceive.json, model.json, scent.json, run.json and the collections analyze.py wrote
 (screens.json, objects.json, tasks.json, findings.json, scores.json, needs_check.json) and writes
 <stem>.data/blocks.json = {entities, badges, stats, blocks: {<name>: block}} plus <stem>.data/findings_serious.json
-(findings with sev >= 3, the collection behind the "serious findings" stat).
+(findings with sev >= 3, the collection behind the "serious findings" stat). Rule labels, the confidence gate and the
+clarity bands come from rubric.json beside this file, read through analyze.py.
 
 The report file sits next to <stem>.media/, so every gallery `src` is `<stem>.media/<file>`.
 A block whose data is empty (no naming conflicts, no tasks, nothing to check) is left out of `blocks`.
@@ -14,8 +15,9 @@ A block whose data is empty (no naming conflicts, no tasks, nothing to check) is
 With diff.json (analyze.py --since) the output is a change document (report `since`): blocks.json gets top-level
 `since` = the previous stem; gallery items carry `change` new/changed (changed ones `before` = the previous shot) and
 every removed screen is appended as a `removed` item showing its previous shot (`<prev stem>.media/<file>`, relative
-to the report) with the notes of its fixed findings; finding entities carry `change: new`, fixed findings come back
-as `removed` entities; `status_table` counts fixed / open / new findings per severity.
+to the report); finding entities carry `change: new`, fixed findings come back as `removed` entities; previous
+findings this run did not re-check (`unverified`: their screen was not reached) stay out of the tree;
+`status_table` counts fixed / open / new / not re-checked findings per severity.
 
 Report-build constraints this file follows (report skill build.py):
 - One `tree` per report: every root entity with `tree` != false renders in it, so a second tree would render each
@@ -32,6 +34,8 @@ import sys
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 
+from analyze import RUBRIC, gated
+
 SEV_COLORS = {4: "red", 3: "orange", 2: "yellow", 1: "gray", 0: "gray"}
 CLASS_COLORS = {"core": "navy", "supporting": "teal", "child": "teal", "system": "brown"}
 CLARITY_COLORS = {"good": "green", "fair": "blue", "poor": "pink"}
@@ -41,7 +45,7 @@ T = {
     "en": {
         "sev": "Severity", "class": "Object class", "screen_type": "Screen type", "clarity": "Clarity",
         "sev_names": {4: "critical", 3: "major", 2: "minor", 1: "cosmetic", 0: "note"},
-        "clarity_names": {"good": "clear (75+)", "fair": "fair (50-74)", "poor": "unclear (<50)"},
+        "clarity_names": {"good": "clear ({good}+)", "fair": "fair ({fair}-{fair_max})", "poor": "unclear (<{fair})"},
         "class_names": {"core": "core", "supporting": "supporting", "child": "child", "system": "system"},
         "stat_screens": "Screens", "stat_objects": "Objects", "stat_tasks": "Tasks", "stat_serious": "Serious findings",
         "where": "Where", "source": "Source", "confidence": "Confidence", "task": "task", "object": "object",
@@ -55,7 +59,7 @@ T = {
         "nc_cols": ["Screen", "Question", "Leaning", "Would raise", "Why unsure"],
         "f_cols": {"id": "Finding", "sev": "Severity", "rule": "Problem", "source": "Source", "screen": "Screen",
                    "text": "Evidence", "confidence": "Confidence", "status": "Since last run"},
-        "status_cols": ["Severity", "Fixed", "Still open", "New"], "total": "Total",
+        "status_cols": ["Severity", "Fixed", "Still open", "New", "Not re-checked"], "total": "Total",
         "status_names": {"open": "open", "new": "new", "fixed": "fixed"},
         "attrs": "Attributes", "related": "Related", "as": "as",
         "yes": "yes", "no": "no", "unsure": "unsure", "correct": "correct", "wrong": "wrong",
@@ -72,7 +76,7 @@ T = {
     "de": {
         "sev": "Schweregrad", "class": "Objektklasse", "screen_type": "Screen-Art", "clarity": "Klarheit",
         "sev_names": {4: "kritisch", 3: "schwer", 2: "mittel", 1: "kosmetisch", 0: "Hinweis"},
-        "clarity_names": {"good": "klar (75+)", "fair": "mittel (50-74)", "poor": "unklar (<50)"},
+        "clarity_names": {"good": "klar ({good}+)", "fair": "mittel ({fair}-{fair_max})", "poor": "unklar (<{fair})"},
         "class_names": {"core": "Kern", "supporting": "unterstützend", "child": "Teil", "system": "System"},
         "stat_screens": "Screens", "stat_objects": "Objekte", "stat_tasks": "Aufgaben", "stat_serious": "Schwere Befunde",
         "where": "Ort", "source": "Quelle", "confidence": "Sicherheit", "task": "Aufgabe", "object": "Objekt",
@@ -88,7 +92,7 @@ T = {
         "nc_cols": ["Screen", "Frage", "Tendenz", "Würde auslösen", "Warum unsicher"],
         "f_cols": {"id": "Befund", "sev": "Schweregrad", "rule": "Problem", "source": "Quelle", "screen": "Screen",
                    "text": "Beleg", "confidence": "Sicherheit", "status": "Seit letztem Lauf"},
-        "status_cols": ["Schweregrad", "Behoben", "Noch offen", "Neu"], "total": "Gesamt",
+        "status_cols": ["Schweregrad", "Behoben", "Noch offen", "Neu", "Nicht erneut geprüft"], "total": "Gesamt",
         "status_names": {"open": "offen", "new": "neu", "fixed": "behoben"},
         "attrs": "Attribute", "related": "Verwandt", "as": "als",
         "yes": "ja", "no": "nein", "unsure": "unsicher", "correct": "richtig", "wrong": "falsch",
@@ -104,25 +108,6 @@ T = {
     },
 }
 
-RULES = {
-    "R-hierarchy": ("No clear visual hierarchy", "Keine klare visuelle Hierarchie"),
-    "R-primary-competing": ("Competing primary actions", "Konkurrierende Hauptaktionen"),
-    "R-primary-missing": ("No visible primary action", "Keine sichtbare Hauptaktion"),
-    "R-title": ("Heading does not name the screen", "Überschrift benennt den Screen nicht"),
-    "R-location": ("Location not shown", "Ort nicht erkennbar"),
-    "R-density": ("Crowded screen", "Überladener Screen"),
-    "R-labels": ("Jargon or unclear labels", "Fachjargon oder unklare Beschriftung"),
-    "R-icon-only": ("Icon-only actions", "Aktionen nur als Icon"),
-    "G-overflow": ("Text overflows its box", "Text läuft über"),
-    "G-overlap": ("Overlapping controls", "Überlappende Elemente"),
-    "G-target": ("Small click targets", "Kleine Klickflächen"),
-    "N-naming": ("One object, several names", "Ein Objekt, mehrere Namen"),
-    "D-depth": ("Task buried deep", "Aufgabe tief versteckt"),
-    "W-failed": ("Task walk failed", "Aufgabe nicht geschafft"),
-    "W-struggle": ("Task walk with detours", "Aufgabe mit Umwegen"),
-    "S-scent": ("Wrong first click", "Falscher erster Klick"),
-    "X-write-leak": ("Write reached the server", "Schreibzugriff erreichte den Server"),
-}
 NIELSEN = [
     ("Visibility of system status", "Sichtbarkeit des Systemstatus"),
     ("Match with the real world", "Übereinstimmung mit der realen Welt"),
@@ -143,7 +128,6 @@ VALUES_DE = {
     "plain-words": "klare Worte", "some-jargon": "etwas Jargon", "jargon-or-icon-only": "Jargon oder nur Icons",
     "card": "Karte", "table": "Tabelle", "chip": "Chip", "menu-item": "Menüeintrag",
 }
-GATE = 0.6
 
 
 def load(d, name, default):
@@ -175,6 +159,11 @@ class Compose:
         run = load(data, "run.json", {})
         self.lang = "de" if str(run.get("lang", "en")).startswith("de") else "en"
         self.t = T[self.lang]
+        rubric = json.loads(RUBRIC.read_text())
+        self.gate, self.bands = rubric["gate"], rubric["bands"]
+        self.rule_labels = {r["id"]: r["label"][self.lang] for r in rubric["rules"] if "label" in r}
+        b = {"good": self.bands["good"], "fair": self.bands["fair"], "fair_max": self.bands["good"] - 1}
+        self.t = {**self.t, "clarity_names": {k: v.format(**b) for k, v in self.t["clarity_names"].items()}}
         self.graph = load(data, "graph.json", None)
         if not self.graph or not self.graph.get("states"):
             sys.exit(f"compose: {data}/graph.json has no states")
@@ -195,7 +184,8 @@ class Compose:
         self.order = self.bfs_order()
         self.marks = {}
         self.prev = self.load_prev(load(data, "diff.json", None))
-        self.fixed = self.fixed_findings()
+        self.fixed = self.prev_findings("fixed")
+        self.unverified = self.prev_findings("unverified")
 
     def load_prev(self, diff):
         """The previous run behind diff.json: its stem, data dir, states, findings, and its media dir as the report
@@ -213,7 +203,7 @@ class Compose:
                 "findings": load(pdata, "findings.json", []),
                 "changed": {c["id"]: c for c in diff["screens"]["changed"]},
                 "new": set(diff["screens"]["new"]), "removed": diff["screens"]["removed"],
-                "fixed": set(diff["findings"]["fixed"])}
+                "fixed": set(diff["findings"]["fixed"]), "unverified": set(diff["findings"]["unverified"])}
 
     def prev_shot(self, pid):
         shot = Path(self.prev["states"][pid].get("shot") or f"{pid}.png").name
@@ -221,12 +211,13 @@ class Compose:
             sys.exit(f"compose: missing previous screenshot {self.prev['media'] / shot}")
         return f"{self.prev['media_rel']}/{shot}"
 
-    def fixed_findings(self):
-        """Previous findings analyze.py marked fixed, minus any whose entity id a current finding already uses."""
+    def prev_findings(self, status):
+        """Previous findings analyze.py marked `status` (fixed or unverified), minus any whose entity id a current
+        finding already uses."""
         if not self.prev:
             return []
         now = {fid(f) for f in self.findings}
-        return [f for f in self.prev["findings"] if f["id"] in self.prev["fixed"] and fid(f) not in now]
+        return [f for f in self.prev["findings"] if f["id"] in self.prev[status] and fid(f) not in now]
 
     @staticmethod
     def was(pid):
@@ -242,8 +233,8 @@ class Compose:
 
     def rule_label(self, rule):
         i = 0 if self.lang == "en" else 1
-        if rule in RULES:
-            return RULES[rule][i]
+        if rule in self.rule_labels:
+            return self.rule_labels[rule]
         m = re.fullmatch(r"C-0*(\d+)", str(rule))
         if m and 1 <= int(m.group(1)) <= 10:
             return NIELSEN[int(m.group(1)) - 1][i]
@@ -280,12 +271,11 @@ class Compose:
     def screen_ref(self, sid):
         return {"ref": "s-" + sid} if sid in self.states else "—"
 
-    def mark_info(self, sid, n, data=None):
-        data = data or self.data
-        if (data, sid) not in self.marks:
-            p = data / "screens" / f"{sid}.json"
-            self.marks[data, sid] = {m["n"]: m for m in (json.loads(p.read_text()).get("marks", []) if p.is_file() else [])}
-        return self.marks[data, sid].get(n)
+    def mark_info(self, sid, n):
+        if sid not in self.marks:
+            p = self.data / "screens" / f"{sid}.json"
+            self.marks[sid] = {m["n"]: m for m in (json.loads(p.read_text()).get("marks", []) if p.is_file() else [])}
+        return self.marks[sid].get(n)
 
     def mark_label(self, sid, n):
         if n is None:
@@ -294,21 +284,21 @@ class Compose:
         return f"#{n} {safe(m.get('label') or m.get('role') or '')}".strip() if m else f"#{n}"
 
     def gate_choice(self, a):
+        """(choice, inside the gate) under analyze.py's rule: the chosen label's own probability against gate.choice."""
         if not isinstance(a, dict) or a.get("choice") is None:
             return None, False
-        p = max((a.get("probabilities") or {}).values(), default=a.get("confidence", 1))
-        return a["choice"], p >= GATE
+        return a["choice"], gated(a, "choice", self.gate)[0]
 
     def gate_bool(self, a):
         if not isinstance(a, dict) or not isinstance(a.get("bool"), (int, float)):
             return "—"
-        p = a["bool"]
-        return self.t["yes"] if p >= GATE else self.t["no"] if p <= 1 - GATE else self.t["unsure"]
+        decided, value, _, _ = gated(a, "bool", self.gate)
+        return self.t["unsure"] if not decided else self.t["yes"] if value else self.t["no"]
 
     def band(self, c):
         if c is None:
             return None
-        return "good" if c >= 75 else "fair" if c >= 50 else "poor"
+        return "good" if c >= self.bands["good"] else "fair" if c >= self.bands["fair"] else "poor"
 
     # -- badges and entities --------------------------------------------
     def sev_bands(self):
@@ -562,7 +552,8 @@ class Compose:
                 "page": 25} if rows else None
 
     def status_table(self):
-        """Findings per severity since the previous run: fixed / still open / new, worst severity first."""
+        """Findings per severity since the previous run: fixed / still open / new / not re-checked (previous findings
+        on screens this run did not reach), worst severity first."""
         if not self.prev:
             return None
         cnt = defaultdict(Counter)
@@ -570,16 +561,17 @@ class Compose:
             cnt[int(f.get("sev", 0))][f.get("status", "new")] += 1
         for f in self.fixed:
             cnt[int(f.get("sev", 0))]["fixed"] += 1
-        names = self.t["sev_names"]
-        rows = [[f"S{s} {names[s]}", c["fixed"], c["open"], c["new"]] for s, c in sorted(cnt.items(), reverse=True)]
-        tot = [sum(c[k] for c in cnt.values()) for k in ("fixed", "open", "new")]
-        rows.append([self.t["total"], *tot])
-        return {"type": "table", "columns": self.t["status_cols"], "numeric": [1, 2, 3], "rows": rows}
+        for f in self.unverified:
+            cnt[int(f.get("sev", 0))]["unverified"] += 1
+        names, keys = self.t["sev_names"], ("fixed", "open", "new", "unverified")
+        rows = [[f"S{s} {names[s]}", *(c[k] for k in keys)] for s, c in sorted(cnt.items(), reverse=True)]
+        rows.append([self.t["total"], *(sum(c[k] for c in cnt.values()) for k in keys)])
+        return {"type": "table", "columns": self.t["status_cols"], "numeric": [1, 2, 3, 4], "rows": rows}
 
-    def note(self, f, data=None):
+    def note(self, f):
         """One gallery note per finding: a box around its marks (pin at the box corner) when the screen file has them,
-        else the pin analyze.py placed (mark centre, or 4/4 without marks). `data` = the run the finding belongs to."""
-        boxes = [m["box"] for m in (self.mark_info(f["state"], n, data) for n in f.get("marks") or []) if m and m.get("box")]
+        else the pin analyze.py placed (mark centre, or 4/4 without marks)."""
+        boxes = [m["box"] for m in (self.mark_info(f["state"], n) for n in f.get("marks") or []) if m and m.get("box")]
         clamp = lambda v: round(min(max(float(v), 0), 100), 1)
         if boxes:
             x0 = min(b["x"] for b in boxes)
@@ -627,17 +619,10 @@ class Compose:
                     it["change"] = "changed"
                     it["before"] = self.prev_shot(self.prev["changed"][sid]["prev"])
             items.append(it)
-        if self.prev:  # removed screens stay, struck through, with their previous shot and their (now fixed) findings
-            fixed = defaultdict(list)
-            for f in self.fixed:
-                fixed[f.get("state")].append(f)
+        if self.prev:  # removed screens stay, struck through, with their previous shot; their findings were not re-checked
             for pid in self.prev["removed"]:
-                it = {"src": self.prev_shot(pid), "title": self.title(pid, self.prev["states"]), "entity": self.was(pid),
-                      "change": "removed"}
-                fs = sorted(fixed[pid], key=lambda f: -int(f.get("sev", 0)))
-                if fs:
-                    it["notes"] = [self.note(f, self.prev["data"]) for f in fs]
-                items.append(it)
+                items.append({"src": self.prev_shot(pid), "title": self.title(pid, self.prev["states"]),
+                              "entity": self.was(pid), "change": "removed"})
         return {"type": "gallery", "label": self.t["gallery_label"], "items": items}
 
     def needs_check_table(self):

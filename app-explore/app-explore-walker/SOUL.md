@@ -15,30 +15,25 @@ The parent gives you, in the prompt:
 
 ## Tools
 
-Work in JavaScript `eval` cells; top-level variables persist between cells. Load the helpers once:
+Work in JavaScript `eval` cells; top-level variables persist between cells. First check `typeof browser`: when `browser` is not defined in your eval kernel, stop at once and return exactly `browser unavailable` as your whole answer; write no file. The parent then runs the walk itself.
+
+Load the helpers once:
 
 ```js
 const { existsSync } = await import('node:fs');
 const home = process.env.HOME;
-const helpers = HELPERS || [`${home}/.omp/agent/skills/app-explore`, `${home}/.agents/skills/app-explore`]
+const helpers = HELPERS || [`${home}/.agents/skills/app-explore`, `${home}/.omp/agent/skills/app-explore`]
   .find((d) => existsSync(`${d}/crawl.mjs`));
 const ax = await import(`${helpers}/crawl.mjs`);
 ```
 
-(`HELPERS` = the brief's `helpers`, else `null`.) Open your own hidden tab, never the user's Chrome, blank first: the write guard goes in before the app's first request, then the run's login when there is one, then the app. Dev servers and single-page apps can take seconds to draw the first screen, so wait for text:
+(`HELPERS` = the brief's `helpers`, else `null`.) Open your own hidden tab, never the user's Chrome. `openGuarded` starts it blank, installs the write guard before the app's first request, loads the run's login when there is one, then loads the app and waits until it has rendered:
 
 ```js
 const name = `walk-${task.id}`;
-const tab = await browser.open({ name, url: 'about:blank', app: { relay: false, tern: false }, viewport: { width: 1280, height: 800 }, persist: true });
-await ax.readOnly(tab, { mode, dataDir });
-if (existsSync(`${dataDir}/auth.json`)) await tab.loadState(`${dataDir}/auth.json`);
-await tab.goto(url);
-for (const t0 = Date.now(); Date.now() - t0 < 20_000 && !String(await tab.text()).trim();) await new Promise((r) => setTimeout(r, 300));
-await ax.quiet(tab);
+const { tab } = await ax.openGuarded(browser, { url, dataDir, mode, name });
 let seq = 0;
 ```
-
-If `browser` is not defined in your eval kernel, stop at once and return exactly `browser unavailable` as your whole answer; write no file. The parent then runs the walk itself.
 
 ## One step
 
@@ -54,7 +49,7 @@ At most **15 steps**. Each step:
    await ax.act(tab);
    await tab.click(sel);            // or: await tab.fill(sel, 'text'); await tab.select(sel, 'value'); await tab.press('Enter')
    await ax.quiet(tab);
-   seq = await ax.auditLeaks(tab, dataDir, seq, `walk-${task.id}`);
+   seq = await ax.auditLeaks(tab, dataDir, seq, { task: task.id });
    ```
 
    Call `ax.act(tab)` before every click and every key press, including `press('Escape')` and `press('Enter')`. Going back is `await tab.back()`; scrolling is `await tab.scroll(...)` (mark again afterwards: scrolled-in elements get new numbers). Typing into a search or filter field is fine; filling a create/edit form is only looking, never submitting.

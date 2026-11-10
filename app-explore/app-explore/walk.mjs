@@ -4,7 +4,6 @@
 //   const wk = await import(`${helpers}/walk.mjs`);
 //   await wk.walkInKernel({ ax, browser, completion, persona, task, url, mode, dataDir });
 export async function walkInKernel({ ax, browser, completion, persona, task, url, mode, dataDir }) {
-  const { existsSync } = await import('node:fs');
   const { mkdir, writeFile } = await import('node:fs/promises');
   const name = `walk-${task.id}`;
   const STEP = {
@@ -27,17 +26,11 @@ export async function walkInKernel({ ax, browser, completion, persona, task, url
   const rule = mode === 'readonly'
     ? 'Never save, send, delete or submit. A create or edit task is done when its form is open with its submit control visible.'
     : 'Never log out.';
-  // Open blank, guard first, then load the app: every app request then runs under the guard.
-  const tab = await browser.open({ name, url: 'about:blank', app: { relay: false, tern: false }, viewport: { width: 1280, height: 800 }, persist: true });
   const steps = [];
   let seq = 0, success = false;
   try {
-    await ax.readOnly(tab, { mode, dataDir });
-    if (existsSync(`${dataDir}/auth.json`)) await tab.loadState(`${dataDir}/auth.json`);
-    await tab.goto(url);
-    // Dev servers and SPAs can take seconds to render after load: wait for visible text (cap 20 s).
-    for (const t0 = Date.now(); Date.now() - t0 < 20_000 && !String(await tab.text()).trim();) await new Promise((r) => setTimeout(r, 300));
-    await ax.quiet(tab);
+    // openGuarded: guard first, then the run's login, then the app: every app request runs under the guard.
+    const { tab } = await ax.openGuarded(browser, { url, dataDir, mode, name });
     for (let i = 0; i < 15; i++) {
       const m = (await ax.marks(tab)).filter((x) => !ax.denied(x.label, mode, x.href));
       const here = await tab.url();
@@ -68,7 +61,7 @@ export async function walkInKernel({ ax, browser, completion, persona, task, url
       await ax.act(tab);
       try { await tab.click(`[data-apx-mark="${mk.n}"]`); } catch { steps[steps.length - 1].outcome = 'blocked: element not clickable'; }
       await ax.quiet(tab);
-      seq = await ax.auditLeaks(tab, dataDir, seq, name);
+      seq = await ax.auditLeaks(tab, dataDir, seq, { task: task.id });
     }
     const s = await (await completion(
       `You are ${persona.name}. You just tried to: ${task.title}. Outcome: ${success ? 'reached' : 'not reached'}.\n` +

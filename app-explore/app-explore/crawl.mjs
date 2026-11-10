@@ -1,7 +1,7 @@
 // Read-only breadth-first crawl of a web app for app-explore, run from an omp JavaScript eval cell.
-//   const ax = await import(`${helpers}/crawl.mjs`);   // helpers = this skill's dir, see SKILL.md
 //   const { tab } = await ax.openApp(browser, { url, dataDir, mode: 'readonly' });   // guard installed before the first load
 //   const counts = await ax.crawl(tab, { dataDir, mediaDir, start: url, mode: 'readonly' });
+//   const { tab } = await ax.openGuarded(browser, { url, dataDir, mode, name });      // any other tab (walks): same guard, no login handling
 // Every function takes the tab (or the eval `browser`) as an argument: module code cannot see eval prelude globals.
 import { access, appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -14,7 +14,10 @@ const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
 // ---------------------------------------------------------------- deny-list
 
 export const DENY_ALWAYS = /(log ?out|sign ?out|abmelden)/i;
-export const DENY_READONLY = /(delete|remove|löschen|entfernen|archiv|send|senden|submit|absenden|save|speichern|publish|veröffentlich|pay|bezahl|kaufen|buy|invite|einladen|reset|revoke|disconnect|trennen)/i;
+// A denied word starts at a word start (so `Absender`, `Display` pass) and, except the stems archiv, veröffentlich,
+// bezahl (German compounds: Archivieren, Veröffentlichen, Bezahlen), ends at a word end (so `Saved items` passes).
+// A lone `Cancel` dismisses a dialog and stays allowed; `Cancel order` is denied.
+export const DENY_READONLY = /(?<![\p{L}\p{N}])(?:(?:delete|remove|send|submit|save|publish|pay|buy|invite|reset|revoke|disconnect|check ?out|löschen|entfernen|senden|absenden|speichern|kaufen|einladen|trennen|stornieren|bestellen)(?![\p{L}\p{N}])|cancel(?=\s+\p{L})|archiv|veröffentlich|bezahl)/iu;
 
 /** True when a control with this accessible name (or link href) must not be pressed in `mode`. */
 export function denied(label, mode = 'readonly', href = '') {
@@ -35,7 +38,9 @@ export function denied(label, mode = 'readonly', href = '') {
 const BLOCK_KEY = '__appExploreBlocked';
 const PASS_KEY = '__appExplorePassed';
 const ACT_MS = 2000;
-export const READ_VERB = /^(get|list|find|search|fetch|count|query|read|load|resolve|check|has|is|can)/i;
+// A read procedure name starts with one of these lowercase verbs followed by a camelCase capital, `_`, a digit or its
+// end: `getUser`, `list`, `is_admin` read; `issueRefund`, `checkout`, `cancel` do not.
+export const READ_VERB = /^(get|list|find|search|fetch|count|query|read|resolve|check|has|is|can)(?=[A-Z_\d]|$)/;
 
 function guardSource(allowPost) {
   // Runs in the page before any app script (tab.addInitScript). Plain ES2017, no imports.
@@ -49,7 +54,7 @@ function guardSource(allowPost) {
     try { saved = JSON.parse(sessionStorage.getItem(key) || '[]'); } catch (e) {}
     window[key] = saved;
     return (row) => {
-      window[key].push(Object.assign({ state: location.href, ts: Date.now() }, row));
+      window[key].push(Object.assign({ page: location.href, ts: Date.now() }, row));
       try { sessionStorage.setItem(key, JSON.stringify(window[key])); } catch (e) {}
     };
   };
@@ -157,19 +162,37 @@ async function drainKey(tab, key) {
 
 /**
  * Move the page's guard logs to <data>/blocked.jsonl (rejected writes) and <data>/passive.jsonl (writes the guard let
- * through, `why`: passive|allow|graphql|trpc). Each row's `state` is the id of the state whose page produced it (or
- * null), `page` the URL the write was made on. Returns how many blocked entries were moved.
+ * through, `why`: passive|allow|graphql|trpc). Each row's `state` is the id of the state whose page produced it (null
+ * when unknown, e.g. in a walk), `task` the walk's task id (null in the crawl), `page` the URL the write was made on.
+ * The guard's own test request (guardCheck) lands in blocked.jsonl with `why: "selfcheck"` and is not counted.
+ * Returns how many blocked entries were moved.
  */
-export async function drainBlocked(tab, dataDir, state = null) {
+export async function drainBlocked(tab, dataDir, { state = null, task = null } = {}) {
   const blocked = await drainKey(tab, BLOCK_KEY);
   const passed = await drainKey(tab, PASS_KEY);
-  const row = (r, extra) => JSON.stringify({ method: r.method, url: r.url, ...extra, state: state ?? null, page: r.state, ts: r.ts }) + '\n';
-  await appendFile(join(dataDir, 'blocked.jsonl'), blocked.map((r) => row(r, { acting: r.acting })).join(''));
+  const row = (r, extra) => JSON.stringify({ method: r.method, url: r.url, ...extra, state, task, page: r.page, ts: r.ts }) + '\n';
+  const self = (r) => String(r.url).includes(SELFCHECK);
+  await appendFile(join(dataDir, 'blocked.jsonl'), blocked.map((r) => row(r, { acting: r.acting, ...(self(r) ? { why: 'selfcheck' } : {}) })).join(''));
   await appendFile(join(dataDir, 'passive.jsonl'), passed.map((r) => row(r, { why: r.why })).join(''));
-  return blocked.length;
+  return blocked.filter((r) => !self(r)).length;
 }
 
-// Per data dir: passive.jsonl line indexes already matched to a request, and request seqs already judged.
+const SELFCHECK = '__apx_selfcheck';
+
+/**
+ * Prove the guard works: a DELETE from the page must come back rejected. Returns the page's answer, in readonly mode
+ * `app-explore: blocked DELETE`; in sandbox mode it sends nothing and returns null (there the DELETE would go through).
+ * Its blocked.jsonl row carries `why: "selfcheck"`; crawl counts skip it.
+ */
+export async function guardCheck(tab, dataDir, mode = 'readonly') {
+  if (mode !== 'readonly') return null;
+  const answer = await tab.evaluate(`fetch('/?${SELFCHECK}=1', { method: 'DELETE' }).then(() => 'sent', (e) => e.message)`);
+  await drainBlocked(tab, dataDir);
+  return answer;
+}
+
+// Per data dir: passive.jsonl line indexes already matched to a request, and requests already judged. Request seqs
+// count per tab from 1 (a reopened tab starts over), so a request is keyed by tab name, seq and start time.
 const audit = new Map();
 
 /**
@@ -177,16 +200,19 @@ const audit = new Map();
  * <data>/leaks.jsonl. A write request (non-GET/HEAD/OPTIONS with a response status) is excused by an unused
  * passive.jsonl entry with the same method and URL (fragment ignored) and pass.ts - 1 s <= request.ts <= pass.ts + 10 s;
  * each entry excuses one request. Requests still waiting for a response hold back the returned seq so the next call
- * checks them again. Returns the seq to pass as the next `sinceSeq`.
+ * checks them again. Leak rows carry `state`, `task` (as drainBlocked) and `page`, the tab's URL at audit time.
+ * Returns the seq to pass as the next `sinceSeq` for this tab.
  */
-export async function auditLeaks(tab, dataDir, sinceSeq = 0, state = null) {
-  await drainBlocked(tab, dataDir, state);
+export async function auditLeaks(tab, dataDir, sinceSeq = 0, { state = null, task = null } = {}) {
+  await drainBlocked(tab, dataDir, { state, task });
   if (!audit.has(dataDir)) audit.set(dataDir, { used: new Set(), judged: new Set() });
   const { used, judged } = audit.get(dataDir);
   let passes = [];
   try { passes = (await readFile(join(dataDir, 'passive.jsonl'), 'utf8')).split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch {}
   const bare = (u) => { try { const x = new URL(u); x.hash = ''; return x.href; } catch { return u; } };
   const reqs = await tab.requests();
+  let page = null;
+  try { page = await tab.url(); } catch {}
   let seq = sinceSeq, pending = false;
   const lines = [];
   for (const r of reqs) {
@@ -195,12 +221,13 @@ export async function auditLeaks(tab, dataDir, sinceSeq = 0, state = null) {
     const write = !SAFE.has(String(r.method).toUpperCase());
     if (write && r.status == null && !r.failureText) pending = true;
     if (!pending) seq = Math.max(seq, s);
-    if (!write || r.status == null || judged.has(s)) continue;
-    judged.add(s);
+    const key = `${tab.name}|${s}|${r.ts}`;
+    if (!write || r.status == null || judged.has(key)) continue;
+    judged.add(key);
     const i = passes.findIndex((p, k) => !used.has(k) && p.method === String(r.method).toUpperCase()
       && bare(p.url) === bare(r.url) && r.ts >= p.ts - 1000 && r.ts <= p.ts + 10_000);
     if (i >= 0) { used.add(i); continue; }
-    lines.push(JSON.stringify({ seq: s, method: r.method, url: r.url, status: r.status, state }) + '\n');
+    lines.push(JSON.stringify({ seq: s, method: r.method, url: r.url, status: r.status, state, task, page }) + '\n');
   }
   await appendFile(join(dataDir, 'leaks.jsonl'), lines.join(''));
   return seq;
@@ -305,30 +332,39 @@ export async function isLogin(tab) {
 const VIEWPORT = { width: 1280, height: 800 };
 const MANAGED = { relay: false, tern: false };
 
+async function settle(tab, url) {
+  try { await tab.goto(url); } catch {}
+  await quiet(tab, { render: RENDER_MS });
+}
+
 /**
- * Open the app in a hidden managed tab named `name`, write guard first: the tab starts on about:blank, readOnly()
- * installs the guard (rules above) and <data>/auth.json is loaded when present, so the app's very first requests
- * already run under the guard. On a login wall, export the session from the user's Chrome (relay tab →
- * <data>/auth.json → loadState). Returns {tab, lang, auth: 'none'|'saved'|'relay'|'manual', login}.
+ * Open `url` in a hidden managed tab named `name` with the write guard in place before the app's first request: the
+ * tab starts on about:blank, readOnly() installs the guard (rules above), <data>/auth.json is loaded when present,
+ * then the URL loads and renders. Returns {tab, saved} (`saved`: auth.json was loaded). Every app tab of a run (the
+ * crawl through openApp, each walk) opens through here.
+ */
+export async function openGuarded(browser, { url, dataDir, mode = 'readonly', allowPost = [], name = 'explore', viewport = VIEWPORT, headed = false } = {}) {
+  await mkdir(dataDir, { recursive: true });
+  const tab = await browser.open({ name, url: 'about:blank', app: MANAGED, viewport, persist: true, ...(headed ? { headed } : {}) });
+  await readOnly(tab, { mode, dataDir, allowPost });
+  const authPath = join(dataDir, 'auth.json');
+  const saved = await access(authPath).then(() => true, () => false);
+  if (saved) await tab.loadState(authPath);
+  await settle(tab, url);
+  return { tab, saved };
+}
+
+/**
+ * openGuarded() for the crawl, plus the login: on a login wall, export the session from the user's Chrome (relay
+ * tab → <data>/auth.json → loadState). Returns {tab, lang, auth: 'none'|'saved'|'relay'|'manual', login}.
  * `login: true` means the relay had no session either: the tab is reopened headed (guard installed again) and the
  * caller must ask the user to sign in there, then call waitLogin().
  */
 export async function openApp(browser, { url, dataDir, mode = 'readonly', allowPost = [], name = 'explore', viewport = VIEWPORT } = {}) {
-  await mkdir(dataDir, { recursive: true });
+  const opts = { url, dataDir, mode, allowPost, name, viewport };
   const authPath = join(dataDir, 'auth.json');
-  const guarded = async (opts) => {
-    const t = await browser.open({ name, url: 'about:blank', app: MANAGED, viewport, persist: true, ...opts });
-    await readOnly(t, { mode, dataDir, allowPost });
-    return t;
-  };
-  const load = async (t) => {
-    try { await t.goto(url); } catch {}
-    await quiet(t, { render: RENDER_MS });
-  };
-  let tab = await guarded();
-  let auth = 'none';
-  if (await access(authPath).then(() => true, () => false)) { await tab.loadState(authPath); auth = 'saved'; }
-  await load(tab);
+  let { tab, saved } = await openGuarded(browser, opts);
+  let auth = saved ? 'saved' : 'none';
   if (await isLogin(tab)) {
     const relay = await browser.open({ name: `${name}-auth`, url, app: { relay: true } });
     try {
@@ -338,12 +374,11 @@ export async function openApp(browser, { url, dataDir, mode = 'readonly', allowP
       await browser.close({ name: `${name}-auth` });
     }
     await tab.loadState(authPath);
-    await load(tab);
+    await settle(tab, url);
     auth = 'relay';
     if (await isLogin(tab)) {
       await browser.close({ name });
-      tab = await guarded({ headed: true });
-      await load(tab);
+      ({ tab } = await openGuarded(browser, { ...opts, headed: true }));
       return { tab, lang: await langOf(tab), auth: 'manual', login: true };
     }
   }
@@ -796,7 +831,7 @@ export async function crawl(tab, {
   };
 
   const goto = async (url, { full = false } = {}) => {
-    await drainBlocked(tab, dataDir, here);
+    await drainBlocked(tab, dataDir, { state: here });
     if (!full && await softGo(url)) return;
     try { await tab.goto(url); } catch (e) { log(`goto failed ${url}: ${e.message}`); }
     await quiet(tab, { render: RENDER_MS });
@@ -805,25 +840,8 @@ export async function crawl(tab, {
   enqueue(start, null, { action: 'goto', label: null, mark: null }, 0);
   for (const s of seeds) enqueue(s, null, { action: 'goto', label: null, mark: null }, 1);
 
-  let stopped = null;
-  try {
-  while (queue.length && states.length < B.states && !late()) {
-    const item = queue.shift();
-    await goto(item.url, { full: !item.parent });
-    const landed = await tab.url();
-    if (new URL(landed).origin !== origin) { log(`left origin: ${item.url} → ${landed}`); continue; }
-    const r = await capture({ kind: 'page', parent: item.parent, via: item.via, depth: item.depth });
-    urlState.set(item.url, r.state.id);
-    urlState.set(normUrl(landed), r.state.id);
-    here = r.state.id;
-    if (mode === 'readonly') seq = await auditLeaks(tab, dataDir, seq, r.state.id);
-    await drainBlocked(tab, dataDir, r.state.id);
-    if (!r.fresh) continue;
-    const page = r.state;
-    const pageUrl = await tab.url();
-    let actions = await queueLinks(page.id, page.depth, r.marks);
-
-    // Clicks: tabs, popups, then other buttons. Each candidate is re-found by role|label|href|nth after a reset.
+  // Clicks: tabs, popups, then other buttons. Each candidate is re-found by role|label|href|nth after a reset.
+  const expand = async (page, pageUrl, pageMarks, actions) => {
     const all = await candidates(tab);
     const clicks = all.filter((c) => !c.href && ['tab', 'popup', 'button'].includes(c.cat) && !c.selected
       && !denied(c.label, mode) && !(mode === 'readonly' && c.submit) && c.label);
@@ -842,12 +860,11 @@ export async function crawl(tab, {
       await tagOpen(tab);
       const tabBefore = c.cat === 'tab' ? await selectedTab(tab) : null;
       const sel = `[data-apx-c="${now.i}"]`;
-      const mBefore = r.marks;
       await act(tab);
       try { await tab.click(sel); } catch { continue; }
       await sleep(300);
       await quiet(tab, { cap: 3000 });
-      const via = { action: 'click', label: c.label, mark: markOf(mBefore, c) };
+      const via = { action: 'click', label: c.label, mark: markOf(pageMarks, c) };
       const after = await tab.url();
       if (normUrl(after) !== normUrl(pageUrl)) {
         if (new URL(after).origin === origin) enqueue(after, page.id, via, page.depth + 1);
@@ -872,9 +889,45 @@ export async function crawl(tab, {
         if (d.state.id !== page.id) edges.push({ from: page.id, to: d.state.id, label: c.label, mark: via.mark });
         if (d.fresh) await queueLinks(d.state.id, d.state.depth, d.marks);
       }
-      if (mode === 'readonly') seq = await auditLeaks(tab, dataDir, seq, page.id);
-      await drainBlocked(tab, dataDir, page.id);
+      if (mode === 'readonly') seq = await auditLeaks(tab, dataDir, seq, { state: page.id });
+      await drainBlocked(tab, dataDir, { state: page.id });
     }
+  };
+
+  let stopped = null;
+  try {
+  while (queue.length && states.length < B.states && !late()) {
+    const item = queue.shift();
+    if (item.expand) {
+      // Deferred click expansion of the start page or a seed: back to its URL, then click through it.
+      await goto(item.url, { full: true });
+      if (normUrl(await tab.url()) !== normUrl(item.url)) continue;
+      here = item.expand.id;
+      await expand(item.expand, item.url, item.marks, item.actions);
+      continue;
+    }
+    await goto(item.url, { full: !item.parent });
+    const landed = await tab.url();
+    if (new URL(landed).origin !== origin) { log(`left origin: ${item.url} → ${landed}`); continue; }
+    const r = await capture({ kind: 'page', parent: item.parent, via: item.via, depth: item.depth });
+    urlState.set(item.url, r.state.id);
+    urlState.set(normUrl(landed), r.state.id);
+    here = r.state.id;
+    if (mode === 'readonly') seq = await auditLeaks(tab, dataDir, seq, { state: r.state.id });
+    await drainBlocked(tab, dataDir, { state: r.state.id });
+    if (!r.fresh) continue;
+    const page = r.state;
+    const pageUrl = await tab.url();
+    const actions = await queueLinks(page.id, page.depth, r.marks);
+    // Seeds are visited right after the start page: while a seed page or a deferred expansion is still queued, this
+    // page's in-page clicks (start page and seeds alike) wait behind them, in visit order, instead of spending the
+    // state budget before the seeds are reached.
+    const last = queue.findLastIndex((x) => !x.parent);
+    if (last >= 0) {
+      queue.splice(last + 1, 0, { expand: page, url: pageUrl, marks: r.marks, actions });
+      continue;
+    }
+    await expand(page, pageUrl, r.marks, actions);
   }
   } catch (e) {
     stopped = `${e.message} (after ${states.length} states)`;
@@ -884,7 +937,8 @@ export async function crawl(tab, {
   const kinds = {};
   for (const s of states) kinds[s.kind] = (kinds[s.kind] || 0) + 1;
   const lines = async (f) => { try { return (await readFile(join(dataDir, f), 'utf8')).split('\n').filter(Boolean).length; } catch { return 0; } };
-  const blocked = await lines('blocked.jsonl');
+  const blocked = (await readFile(join(dataDir, 'blocked.jsonl'), 'utf8').catch(() => '')).split('\n').filter(Boolean)
+    .filter((l) => JSON.parse(l).why !== 'selfcheck').length;
   const leaks = await lines('leaks.jsonl');
   return { states: states.length, kinds, edges: JSON.parse(await readFile(join(dataDir, 'graph.json'), 'utf8')).edges.length,
     queued: queue.length, skipped, blocked, leaks, minutes: Math.round((Date.now() - t0) / 6000) / 10, stopped };

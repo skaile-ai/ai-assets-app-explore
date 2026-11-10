@@ -26,7 +26,7 @@ const ax = await import(`${helpers}/crawl.mjs`);
 
 `<skill dir>` in shell commands below is that same `helpers` path.
 
-The app's data is someone's real data. The run is **readonly** by default: a write guard in the page rejects every write the crawler's or walkers' own clicks would cause (step 3 has the exact rule), and a deny-list keeps their hands off controls like delete, save, send. Readonly does not freeze the data: writes the page makes by itself while it loads (a POST that bootstraps a workspace, creates a default project, marks a notification seen) pass the guard, because the app breaks without them, and they can change data. They are listed in `passive.jsonl` (`why: passive`), and the user sees them in the chat answer (steps 4 and 8). `sandbox` lifts guard and deny-list for an app whose data may change; logout stays denied in every mode.
+The app's data is someone's real data. The run is **readonly** by default: a write guard in the page and a deny-list keep the crawler's and walkers' own clicks from writing; step 3 has the exact rule and the writes it still lets through. `sandbox` lifts guard and deny-list for an app whose data may change; logout stays denied in every mode.
 
 ## 1. Arguments and stem
 
@@ -35,7 +35,7 @@ Parse `app-explore <url> [sandbox] [since <path>|since auto] [budget <n>]`:
 - `mode`: `sandbox` when the word is present, else `readonly`.
 - Reports dir: `<repo>/.scratch/reports/` with repo = `git rev-parse --show-toplevel` of the cwd, else `~/.scratch/reports/`.
 - **Stem**: `app-explore-<host>-<YYYY-MM-DD>`, with `-v2`, `-v3` … appended when that stem's `.json` or `.data/` already exists. `<host>` is the URL hostname without `www.` (`localhost` stays `localhost`).
-- `since auto`: the newest `app-explore-<host>-*.json` in the reports dir other than this run's stem; `since <path>`: that file. Its `<prev stem>.data/` and `<prev stem>.media/` must exist, else stop with `since: <path> has no .data/ dir`. `since` (for `run.json` and every later step) = the absolute path of that `<prev stem>.data/` dir. No `since`: `since = null`.
+- `since auto`: among stems `app-explore-<host>-<date>[-vN]` in the reports dir other than this run's that have both a `<stem>.json` report file (not `<stem>.choice.json`) and a `<stem>.data/` dir, the one whose `<stem>.json` was modified last; `since <path>`: that file. Its `<prev stem>.data/` and `<prev stem>.media/` must exist, else stop with `since: <path> has no .data/ dir`. `since` (for `run.json` and every later step) = the absolute path of that `<prev stem>.data/` dir. No `since`: `since = null`.
 - `budget <n>`: sets `budgets.states`, the crawl's state budget (default 60):
 
 ```js
@@ -56,7 +56,7 @@ await ax.writeRun(dataDir, { url, started: new Date().toISOString(), mode, since
 const o = await ax.openApp(browser, { url, dataDir, mode });   // tab "explore", hidden managed Chromium, 1280×800
 ```
 
-`openApp` installs the write guard (step 3) before anything loads: it opens the tab on `about:blank`, calls `readOnly`, loads `<stem>.data/auth.json` when present, then navigates to the URL, so even the app's first requests run under the guard. It then detects a login wall (URL path contains login/signin/sign-in/auth, or a visible password field) and borrows the session from the user's Chrome: it opens the URL in a relay tab, exports cookies and storage to `auth.json` with `saveState`, closes the relay tab, loads the state into the guarded managed tab and navigates again. The user's Chrome only ever serves this export; the crawl runs in the managed tab.
+`openApp` opens the tab through `ax.openGuarded` (each walk in step 8 opens its tab the same way), which installs the write guard (step 3) before anything loads: it opens the tab on `about:blank`, calls `readOnly`, loads `<stem>.data/auth.json` when present, then navigates to the URL and waits until the app has rendered, so even the app's first requests run under the guard. `openApp` then detects a login wall (URL path contains login/signin/sign-in/auth, or a visible password field) and borrows the session from the user's Chrome: it opens the URL in a relay tab, exports cookies and storage to `auth.json` with `saveState`, closes the relay tab, loads the state into the guarded managed tab and navigates again. The user's Chrome only ever serves this export; the crawl runs in the managed tab.
 
 `o.login === true` means the user's Chrome has no session either: `openApp` reopened the tab headed. Tell the user in one chat line to sign in in the browser window that just opened, then run `await ax.waitLogin(o.tab, { dataDir })`, which waits until the login wall is gone and saves `auth.json`. Write the language: `await ax.writeRun(dataDir, { lang: o.lang, auth: o.auth })` (`de` when `<html lang>` starts with `de`, else `en`).
 
@@ -66,9 +66,9 @@ const o = await ax.openApp(browser, { url, dataDir, mode });   // tab "explore",
 
 ## 3. Write guard
 
-The guard is already in place from step 2. In readonly mode it is an init script over `fetch`, `XMLHttpRequest`, `sendBeacon` and form submits that also answers "really?" confirms with no. Readonly means the crawler's and walkers' own clicks never write; the page itself still POSTs while it loads, and those writes pass. Every crawler click or key press is preceded by `ax.act(tab)`, which opens a 2-second **acting** window in the current document: inside it every write is rejected except POSTs matching an `allowPost` regex string, GraphQL bodies without `mutation`, and tRPC calls whose procedures all start with a read verb (`get`, `list`, `find` …); outside it (page loads, timers) POST passes and PUT, PATCH, DELETE are still rejected. `tab.route` cannot filter by method, so the guard lives in the page.
+The guard is already in place from step 2. In readonly mode it is an init script over `fetch`, `XMLHttpRequest`, `sendBeacon` and form submits that also answers "really?" confirms with no. Readonly means the crawler's and walkers' own clicks never write; the page itself still POSTs while it loads, and those writes pass. Every crawler click or key press is preceded by `ax.act(tab)`, which opens a 2-second **acting** window in the current document: inside it every write is rejected except POSTs matching an `allowPost` regex string, GraphQL bodies without `mutation`, and tRPC calls whose procedures all start with a read verb followed by a camelCase capital, `_`, a digit or the name's end (`getUser`, `list`; not `issueRefund`, `checkout`); outside it (page loads, timers) POST passes and PUT, PATCH, DELETE are still rejected. `tab.route` cannot filter by method, so the guard lives in the page. The deny-list (`ax.denied`) matches whole words at a word start (`Save`, `Delete project`, `Cancel order`, `Projekt löschen`; not `Saved items`, `Absender`, a lone `Cancel`).
 
-A passing load-time POST is not harmless by definition: it can create or change data (an app that creates a default project on first visit does so under the guard too). The guard cannot tell a bootstrap write from a read-only POST; it only records them, and the user decides what they mean.
+A passing load-time POST is not harmless by definition: it can create or change data (an app that creates a default project on first visit does so under the guard too). The guard cannot tell a bootstrap write from a read-only POST; it records them in `passive.jsonl` (`why: passive`), and the user decides what they mean. So an empty `leaks.jsonl` never means the data is unchanged: in readonly mode the chat shows the user the distinct passive write procedures (`procs`, step 4) after the crawl and again after the walks (step 8).
 
 When a screen breaks because a click needs a read-only POST the rules miss (a search endpoint), replace the guard with that endpoint allowed; this reloads the page under the new guard:
 
@@ -76,14 +76,14 @@ When a screen breaks because a click needs a read-only POST the rules miss (a se
 await ax.readOnly(o.tab, { mode, dataDir, allowPost: ['/api/search'] });
 ```
 
-Rejections land in `<stem>.data/blocked.jsonl`, writes the guard let through in `passive.jsonl` (`why`: passive, allow, graphql, trpc); each row has `method`, `url`, `state` (the id of the state whose page made the write, `null` before the first state) and `page` (the URL it was made on). Writes that reached the server without such a pass land in `leaks.jsonl`. The crawl calls both functions after every state; a step that drives its own tab calls them the same way, positional arguments:
+Rejections land in `<stem>.data/blocked.jsonl`, writes the guard let through in `passive.jsonl` (`why`: passive, allow, graphql, trpc), writes that reached the server without such a pass in `leaks.jsonl`. Each row has `method`, `url`, `state` (the id of the state whose page made the write; `null` before the first state and in walks), `task` (the walk's task id; `null` in the crawl) and `page` (the URL it was made on); `analyze.py` places a leak without `state` on the state whose url, path or route matches `page`. The crawl calls both functions after every state; a step that drives its own tab calls them the same way:
 
 ```js
-const nBlocked = await ax.drainBlocked(tab, dataDir, state);            // state id or null; returns rows moved to blocked.jsonl
-seq = await ax.auditLeaks(tab, dataDir, seq, state);                   // drains first; seq: start 0, pass the returned seq next time
+const nBlocked = await ax.drainBlocked(tab, dataDir, { state });       // state id or null (walks: { task }); returns rows moved to blocked.jsonl
+seq = await ax.auditLeaks(tab, dataDir, seq, { state });              // drains first; seq per tab: start 0, pass the returned seq next time
 ```
 
-**Done when** `blocked.jsonl`, `passive.jsonl` and `leaks.jsonl` exist and, in readonly mode, `await o.tab.evaluate("fetch('/', {method:'DELETE'}).then(() => 'sent', e => e.message)")` returns `app-explore: blocked DELETE`.
+**Done when** `blocked.jsonl`, `passive.jsonl` and `leaks.jsonl` exist and, in readonly mode, `await ax.guardCheck(o.tab, dataDir, mode)` returns `app-explore: blocked DELETE` (its `blocked.jsonl` row has `why: "selfcheck"` and counts nowhere).
 
 ## 4. Crawl
 
@@ -105,7 +105,7 @@ const prevGraph = since ? JSON.parse(await Bun.file(`${since}/graph.json`).text(
 const seeds = prevGraph ? [...new Set(prevGraph.states.filter((s) => s.kind === 'page').map((s) => s.url))] : [];
 ```
 
-Seeds are visited right after `start`, before the breadth-first expansion, so a small `budget` re-checks the previous run's first pages and leaves the rest as removed screens.
+Seeds are visited right after `start`, before any breadth-first expansion: the start page's (and each seed's) tab, popup and button clicks wait until every seed page is captured, so a small `budget` re-checks the previous run's first pages and leaves the rest as removed screens.
 
 The crawl is breadth-first from `start`. Per state it waits until the network is quiet, computes the state **key** (route, kind, heading, interactive labels) and skips known keys and routes already holding `perRoute` states (that state's `instances` grows instead). A new state gets `<id>.png`, `<id>.som.png` (marks drawn), `<id>.mobile.png` (pages at depth ≤ 1, 390×844), `screens/<id>.json` (aria snapshot, visible text, marks, geometry: overflow, overlap, small targets) and a dHash. Pages expand by their links (nav first) and by clicking tabs, popup triggers and other buttons; a click that opens a dialog, menu or tab panel records a leaf state and queues its links. `graph.json` is rewritten after every state, so an interrupted crawl keeps what it saw.
 
@@ -114,11 +114,11 @@ Read the `log` lines and `counts` as they come back:
 - `states` far below the budget and `queued: 0`: the app exposes few links; check `screens/s01.json` marks for navigation that is not an `<a href>` (it reached the crawl only through button clicks).
 - Many states with the same heading and different routes: item pages whose slug ids the `:id` pattern did not collapse eat the budget; raise `budgets.states` so the rest of the app is still reached.
 - `leaks > 0` in readonly mode: a write reached the server. Stop, show the user `leaks.jsonl`, and continue only after they confirm the app's data may change (then the run is `sandbox`).
-- `counts.blocked` is the number of rejected writes (`blocked.jsonl` lines): crawler clicks the guard stopped from writing, and PUT/PATCH/DELETE the page tried while loading. An empty `leaks.jsonl` only means no write got past the guard unrecorded; it does not mean the data is unchanged (passive writes, below).
+- `counts.blocked` is the number of rejected writes (`blocked.jsonl` lines without `why: "selfcheck"`): crawler clicks the guard stopped from writing, and PUT/PATCH/DELETE the page tried while loading.
 - The log shows the login page's heading and new states stop appearing: the session expired; redo step 2 and crawl again with the same `dataDir`.
 - `counts.stopped` is set (the tab died, usually a page whose script froze it): the states before it are complete on disk; keep them and go on with step 5. Do not move or delete the `.data`/`.media` directories to retry; a retry needs a fresh `browser.open` and a new stem.
 
-The passive writes, grouped by procedure (method + URL path; for tRPC the path names the procedure), are what the run may have changed in the app's data:
+The passive writes (step 3), grouped by procedure (method + URL path; for tRPC the path names the procedure):
 
 ```js
 const passive = (await Bun.file(`${dataDir}/passive.jsonl`).text()).split('\n').filter(Boolean).map((l) => JSON.parse(l))
@@ -133,7 +133,7 @@ Then close the crawl tab: `await browser.close({ name: 'explore' })`. Steps 5-7 
 
 ## 5. Perceive every screen
 
-Models perceive, rules decide. `rubric.json` beside this file is the single source of the per-screen questions, the rules that turn answers into **findings** (rule id, severity 0–4 after Nielsen), the confidence gate and the clarity weights; change a question or a threshold there, never in code. The model work lives in `pipeline.mjs`, imported like `crawl.mjs`; it gets the eval helpers passed in because module code cannot see them:
+Models perceive, rules decide. `rubric.json` beside this file is the single source of the per-screen questions, the synonym and first-click questions, the rules that turn answers into **findings** (rule id, severity 0–4 after Nielsen, report label), the confidence `gate`, the clarity weights and `bands`, and the `since` change thresholds; change a question or a threshold there, never in code. The model work lives in `pipeline.mjs`, imported like `crawl.mjs`; it gets the eval helpers passed in because module code cannot see them:
 
 ```js
 const ap = await import(`${helpers}/pipeline.mjs`);
@@ -149,23 +149,26 @@ Two things run in parallel per state. The cheap judge answers the rubric questio
 
 **Done when** `perceive.json` has one entry per `graph.json` state, each with `answers` and `extract`, and `run.json.perception` is `judge` or `agent`.
 
-## 6. Synthesise the object model and check first-click scent
+## 6. Synthesise the object model, check synonyms and first-click scent
 
 ```js
 const m = await ap.synthesize({ completion }, { dataDir });
+const y = await ap.synonyms({ judgeBatch }, { dataDir });
 const s = await ap.scent({ judgeBatch }, { dataDir });
 ```
 
-`synthesize` hands every extraction plus the graph (state id, route, heading, depth, edges) to the slow model once and writes `<stem>.data/model.json`: 2 **personas** (`p1` first-time user, `p2` a domain role), the **objects** in OOUX terms (one object per thing, every other UI name of it in `aliases`; class core, supporting, child or system; attributes, relationships, calls to action, home states, representations) and at most 6 **tasks** (create, find, edit of core objects, each with a `target_state`). Objects whose `homes` hold no `graph.json` state and tasks whose `target_state` is missing are dropped (`m.dropped` counts them). Names are in the app's language (`run.json.lang`).
+`synthesize` hands every extraction plus the graph (state id, route, heading, depth, edges) to the slow model once and writes `<stem>.data/model.json`: 2 **personas** (`p1` first-time user, `p2` a domain role), the **objects** in OOUX terms (one object per thing, every other UI name of it in `aliases`; class core, supporting, child or system; attributes, relationships, calls to action, home states, representations) and at most 6 **tasks** (create, find, edit of core objects, each with a `target_state`). Objects whose `homes` hold no `graph.json` state and new tasks whose `target_state` is missing are dropped (`m.dropped` counts them). Names are in the app's language (`run.json.lang`).
 
-With `since`, `synthesize` reads the previous `model.json` from `run.json.since` itself: persona, object and task ids stay the same for the same things, every previous task is kept (up to 2 new ones join it) and gets a `target_state` in this crawl. `m.kept.missing` lists previous task ids the new model lost: their screen is gone, and the report's change section says so.
+With `since`, `synthesize` reads the previous `model.json` and `graph.json` from `run.json.since` itself: persona and object ids stay the same for the same things, every previous task is kept as it was (up to 2 new ones join it), and its `target_state` is not the model's pick but the state of this crawl that matches its previous target the way `diff.json` matches screens (state key, else route + kind + heading). A previous task without such a match gets `target_state: null` and `target_missing: true`, so step 8 walks it and it fails visibly. `model.json` `kept` = `{ids, missing}` (the previous task ids, and those without a target); `synthesize` returns the same `kept`.
 
-`scent` asks the judge, per task, which numbered mark on the entry state (the crawl's first state) the persona would click first, and compares it with the first edge of every shortest click path from there to the task's `target_state`. `<stem>.data/scent.json` per task: `predicted_mark`, `p`, `shortest_first_mark`, `first_marks`, `first_labels`, `clicks`, `correct` (`null` when the target is the entry itself, unreachable, or the judge gave no answer; `false` when the path's first control carries no mark on the entry screenshot, e.g. below the fold).
+`synonyms` lets the cheap judge check what the naming rule would otherwise take on the slow model's word: per candidate pair "do both labels name the same thing?" (rubric.json `synonyms`, gated like every bool). Candidates, capped at `synonyms.max_pairs`: each object's name against each of its `aliases`, object names that share a word, and object names the per-screen extraction used that are no model name or alias against the object names they share a word with. `<stem>.data/synonyms.json` lists the pairs with their `answer`; `analyze.py` drops an alias judged a different thing, adds a screen label judged the same, and merges two objects judged one thing into one naming finding; undecided pairs go to `needs_check.json`. `y.judge_error` set: the judge is unavailable, every answer is null and naming rests on the model alone; go on.
+
+`scent` asks the judge, per task, which numbered mark on the entry state (the crawl's first state) the persona would click first, and compares it with the first edge of every shortest click path from there to the task's `target_state`. `<stem>.data/scent.json` per task: `predicted_mark`, `p`, `shortest_first_mark`, `first_marks`, `first_labels`, `clicks`, `correct` (`null` when the target is the entry itself, unreachable or `null`, or the judge gave no answer; `false` when the path's first control carries no mark on the entry screenshot, e.g. below the fold).
 
 - `m.objects < 3`: the crawl saw too little of the app; go back to step 4 with a higher budget.
 - `scent` throws `judge unavailable`: one `app-explore-critic` agent reads `scent.questions.json` and its `image`, answers `first_click` per task in the judge choice shape into `<stem>.data/scent.agent.json`; then `await ap.scent({ judgeBatch }, { dataDir, answers: JSON.parse(await Bun.file(`${dataDir}/scent.agent.json`).text()) })`.
 
-**Done when** `model.json` has ≥ 3 objects, each with a `homes` state in `graph.json`, every task's `target_state` exists in `graph.json`, and `scent.json` has one entry per task.
+**Done when** `model.json` has ≥ 3 objects, each with a `homes` state in `graph.json`, every task's `target_state` exists in `graph.json` (with since: or is `null` with `target_missing`), `synonyms.json` exists, and `scent.json` has one entry per task.
 
 ## 7. Findings and scores
 
@@ -173,15 +176,15 @@ With `since`, `synthesize` reads the previous `model.json` from `run.json.since`
 python3 <skill dir>/analyze.py <reports dir>/<stem>.data            # with since: append  --since <since>
 ```
 
-`analyze.py` (Python stdlib) applies `rubric.json` rules to the perceptions, the crawl's geometry (overflow, overlap, small targets), the object names (several labels for one object, OOUX P13), click depth from the entry state, `scent.json`, `leaks.jsonl` (readonly runs), and, once they exist, `walks/*.json` and `critique/*.json`. The confidence gate: a `bool` counts as true at P ≥ 0.6 and false at P ≤ 0.4, a `choice` counts when its top probability is ≥ 0.6, a `score` counts as its expected level, a critique finding counts at confidence ≥ 0.6. Anything outside the gate never becomes a finding; it goes to `needs_check.json` ("needs a human look") with its leaning answer and the rules it would trigger.
+`analyze.py` (Python stdlib) applies `rubric.json` rules to the perceptions, the crawl's geometry (overflow, overlap, small targets), the object names (several labels for one object, OOUX P13, after the synonym checks of step 6), click depth from the entry state, `scent.json`, `leaks.jsonl` (readonly runs; a walk's leak names its task), and, once they exist, `walks/*.json` and `critique/*.json`. Every judge answer and critique finding passes the rubric.json `gate` (bool true/false thresholds, choice: the chosen label's own probability, critic confidence); a `score` counts as its expected level. Anything outside the gate never becomes a finding; it goes to `needs_check.json` ("needs a human look") with its leaning answer and the rules it would trigger.
 
 It writes into the data dir:
 
-- `findings.json`: one finding per rule and state, id `<rule>@<state key[:8]>` (stable across runs); a naming finding is one per object, id `<rule>@<state key[:8]>-<object id>`, with `object`. Each has `source`, `sev`, `text`, `marks`, `confidence` and `pins` (`{x, y, n}` in percent at each mark's box centre, `{x: 4, y: 4}` without marks), sorted by severity.
+- `findings.json`: one finding per rule and state, id `<rule>@<state key[:8]>` (stable across runs); a naming finding is one per object, id `<rule>@<state key[:8]>-<object id>`, with `object`; a walk finding is one per task, id `<rule>@<state key[:8]>-<task id>`, with `task`. Each has `source`, `sev`, `text`, `marks`, `confidence` and `pins` (`{x, y, n}` in percent at each mark's box centre, `{x: 4, y: 4}` without marks), sorted by severity.
 - `scores.json`: `clarity` 0–100 per screen and for the app, `findability` (walk success rate × mean directness; `null` before walks), `naming` (share of objects with one name).
 - `needs_check.json`, and the collections `screens.json`, `objects.json`, `tasks.json` for the report.
 
-With `--since` (the previous run's data dir) it also compares the two runs and writes `diff.json`: screens match by state key, else by route + kind + heading; a matched screen is **changed** when its dHash differs by more than 10 bits, its clarity by 10 or more, or its interactive labels overlap under 0.8 (Jaccard). `diff.json` = `{since, since_data, match: {<id>: <prev id>}, screens: {new, removed, changed: [{id, prev, dist, clarity_delta, jaccard}]}, objects: {new, removed, renamed}, tasks: {<id>: {prev, now}}, findings: {fixed, open, new}}`, and every finding in `findings.json` gets `status`: `open` when the same rule held on the matching previous screen, else `new`; previous findings without a match are `fixed`. It prints one `since` line with these counts.
+With `--since` (the previous run's data dir) it also compares the two runs and writes `diff.json`: screens match by state key, else by route + kind + heading; a matched screen is **changed** past the rubric.json `since` thresholds (dHash bit distance, clarity delta, interactive-label Jaccard). `diff.json` = `{since, since_data, match: {<id>: <prev id>}, screens: {new, removed, changed: [{id, prev, dist, clarity_delta, jaccard}]}, objects: {new, removed, renamed}, tasks: {<id>: {prev, now}}, findings: {fixed, unverified, open, new}}`, and every finding in `findings.json` gets `status`: `open` when the same rule held on the matching previous screen (a walk finding: for the same task), else `new`. A previous finding that no longer fires is `fixed` only when this run looked again (its screen matched, or its task was walked again); on a screen this crawl did not reach it is `unverified`. It prints one `since` line with these counts.
 
 Run it again after every later step that adds walks or critique; it rewrites all its outputs (with the same `--since`).
 
@@ -189,9 +192,9 @@ Run it again after every later step that adds walks or critique; it rewrites all
 
 ## 8. Walks and critique
 
-Two kinds of evidence a screenshot cannot give: does a person reach the goal, and what does a careful reviewer see that the closed questions missed. Each task of `model.json` becomes a **walk**: an `app-explore-walker` agent (`@task_standard`) plays the task's persona in its own hidden tab, thinks aloud before every click, and writes `walks/<task id>.json`. Then one `app-explore-critic` agent (`@slow`) reviews the eight lowest-clarity screens against Nielsen's heuristics and writes `critique/c1.json`. Both agents know their file formats; the prompts only carry the brief.
+Two kinds of evidence a screenshot cannot give: does a person reach the goal, and what does a careful reviewer see that the closed questions missed. Each task of `model.json` becomes a **walk**: an `app-explore-walker` agent plays the task's persona in its own hidden tab, thinks aloud before every click, and writes `walks/<task id>.json`. Then one `app-explore-critic` agent reviews the eight lowest-clarity screens against Nielsen's heuristics and writes `critique/c1.json`. Each agent's model comes from its agent definition (walker `@task_standard`, critic `@slow`); the `task` calls pass none. Both agents know their file formats; the prompts only carry the brief.
 
-Walks run in waves with a barrier per wave: at most 2 at a time when the app is a local dev server (host `localhost` or `127.0.0.1`: every walker's full page load competes for the same dev server, and an unbundled one serves ~1500 modules per load), else 4. The walker gets the task's title, never its `target_state`: it must find the way like a user. With `since`, `model.tasks` already holds every previous task id that still has a screen plus the new ones (step 6), so the loop re-walks all of them; their results land in `diff.json.tasks` as `{prev, now}` after the re-run of `analyze.py`.
+Walks run in waves with a barrier per wave: at most 2 at a time when the app is a local dev server (host `localhost` or `127.0.0.1`: every walker's full page load competes for the same dev server, and an unbundled one serves ~1500 modules per load), else 4. The walker gets the task's title, never its `target_state`: it must find the way like a user. With `since`, `model.tasks` already holds every previous task id plus the new ones (step 6), those whose screen is gone included, so the loop re-walks all of them; their results land in `diff.json.tasks` as `{prev, now}` after the re-run of `analyze.py`.
 
 ```js
 const model = JSON.parse(await Bun.file(`${dataDir}/model.json`).text());
@@ -233,9 +236,9 @@ await critic.wait();
 
 Then run `analyze.py` again exactly as in step 7 (with `--since <since>` when set): it turns failed and struggling walks into `W-failed` / `W-struggle` findings (a wrong turn is a step with `confused: true`), the first-click check into `S-scent`, and the critique into `C-<n>` findings.
 
-Read the walk answers as they come back. A walk that ended in `give-up` on the first screen with no marks usually means the page had not rendered or the session expired, not a usability problem: check `walks/<id>.json` `steps[0].url` and redo step 2 before believing it. A `W-failed` or `W-struggle` walk whose think-aloud (`steps[].think`, `survey.comment`) talks about loading, a blank or empty screen, a spinner or "taking too long" measured load time, not usability: delete its `walks/<id>.json`, redo that walk alone (one walker, no other walk running) and re-run `analyze.py` before believing it. Any new line in `leaks.jsonl` after the walks in readonly mode: stop and show it to the user, as in step 4. The walkers' passive writes land in `passive.jsonl` too: recompute `procs` (step 4) after the walks.
+Read the walk answers as they come back. A walk that ended in `give-up` on the first screen with no marks usually means the page had not rendered or the session expired, not a usability problem: check `walks/<id>.json` `steps[0].url` and redo step 2 before believing it. A `W-failed` or `W-struggle` walk whose think-aloud (`steps[].think`, `survey.comment`) talks about loading, a blank or empty screen, a spinner or "taking too long" measured load time, not usability: delete its `walks/<id>.json`, redo that walk alone (one walker, no other walk running) and re-run `analyze.py` before believing it. Any new line in `leaks.jsonl` after the walks in readonly mode: stop and show it to the user, as in step 4. Recompute `procs` (step 4) after the walks: the walkers' passive writes land in `passive.jsonl` too.
 
-**Done when** `walks/` has one file per task in `model.json` (each with `steps`, `success`, `clicks`, `survey`), no `W-failed`/`W-struggle` finding rests on a walk whose think-aloud blames loading, `critique/c1.json` is a JSON array of findings with `state`, `rule` `C-1`…`C-10`, `sev`, `marks` and `confidence`, the re-run `findings.json` contains `W-*`, `S-scent` or `C-*` findings where the walks and critique gave reason, `leaks.jsonl` is empty in readonly mode, every tab this step opened in this kernel is closed, and in readonly mode the chat shows the user the distinct passive write procedures of the whole run (`procs`, method + path, count), or "no passive writes"; never "the data is unchanged" on the strength of an empty `leaks.jsonl`.
+**Done when** `walks/` has one file per task in `model.json` (each with `steps`, `success`, `clicks`, `survey`), no `W-failed`/`W-struggle` finding rests on a walk whose think-aloud blames loading, `critique/c1.json` is a JSON array of findings with `state`, `rule` `C-1`…`C-10`, `sev`, `marks` and `confidence`, the re-run `findings.json` contains `W-*`, `S-scent` or `C-*` findings where the walks and critique gave reason, `leaks.jsonl` is empty in readonly mode, every tab this step opened in this kernel is closed, and in readonly mode the chat shows the user the distinct passive write procedures of the whole run (`procs`, method + path, count), or "no passive writes".
 
 ## 9. Report
 
@@ -262,11 +265,11 @@ python3 <skill dir>/compose.py <reports dir>/<stem>.data <reports dir>/<stem>.me
 |`findings_data`|data|every finding, sortable, with evidence and confidence|
 |`screens_gallery`|gallery|one item per state in BFS order, badges screen type and clarity band, one numbered note per finding linking to its tree row|
 |`needs_check_table`|table|answers too unsure to count: "needs a human look"|
-|`status_table`|table|with `since` only: findings per severity fixed / still open / new, plus a total row|
+|`status_table`|table|with `since` only: findings per severity fixed / still open / new / not re-checked, plus a total row|
 
 A block whose data is empty (no naming conflict, no task, nothing unsure) is not in `blocks.json`; its section says so in one sentence instead.
 
-With `since` (`diff.json` exists) `blocks.json` is a change document: top-level `since` = the previous stem; gallery items carry `change: new` or `changed` (changed ones get `before` = the previous shot, so the lightbox shows a Before/Now toggle); every removed screen is appended to the gallery as a `removed` item (struck through) showing its previous shot `<prev stem>.media/<id>.png`, path relative to the report, with the notes of its fixed findings and entity `s-was-<prev id>`; finding entities carry `change: new`, fixed findings return as `removed` tree rows; `findings_data` gets a "since last run" column; `status_table` appears. The report renders the change bar with the counts of new, changed and removed parts; on an identical re-run (report ≥ 0.6.3) it says "none" and the status table shows every finding still open.
+With `since` (`diff.json` exists) `blocks.json` is a change document: top-level `since` = the previous stem; gallery items carry `change: new` or `changed` (changed ones get `before` = the previous shot, so the lightbox shows a Before/Now toggle); every removed screen is appended to the gallery as a `removed` item (struck through) showing its previous shot `<prev stem>.media/<id>.png`, path relative to the report, with entity `s-was-<prev id>`; finding entities carry `change: new`, fixed findings return as `removed` tree rows; unverified findings stay out of the tree and only count in the status table's "not re-checked" column; `findings_data` gets a "since last run" column; `status_table` appears. The report renders the change bar with the counts of new, changed and removed parts (removed = removed screens + fixed findings); on an identical re-run (report ≥ 0.6.3) it says "none" and the status table shows every finding still open.
 
 Then start one `task` subagent, the report skill's autopilot path; this session waits for it. Its task text, with the placeholders filled:
 
@@ -287,8 +290,7 @@ Write <stem>.choice.json exactly as:
  , {"id": "q7", "chapter": "What changed", "text": "What changed since <prev stem>?", "feature": "tree"}
 (status_table is a table, which --check-choice counts as the tree feature).
 Take `entities`, `badges`, `stats` and, with since, `since` from <stem>.data/blocks.json into <stem>.json unchanged, and every block from its `blocks`
-unchanged, by name, in this order. Do not edit, drop, add to or re-create any entity, badge or block; write only prose
-(`p`, `callout`, `argument`). Every block follows a `p` that states what it shows and what it means.
+unchanged, by name, in this order; the prose (`p`, `callout`, `argument`) is yours. Every block follows a `p` that states what it shows and what it means.
 - lede (no question): `callout` tone `answer` with the verdict, then `argument`: claim = the verdict, reasons = the three fixes
   that remove the most severe findings, each linking one finding [[f-…]], conclusion = what to do first.
 - q1: objects_table, naming_table
@@ -297,7 +299,8 @@ unchanged, by name, in this order. Do not edit, drop, add to or re-create any en
 - q4: scorecard_table, rubric_bars, needs_check_table
 - q5: findings_tree, findings_data
 - q6: screens_gallery
-- q7 (since only): status_table; its `p` names the screen counts (new, removed, changed) and finding counts (fixed, open, new)
+- q7 (since only): status_table; its `p` names the screen counts (new, removed, changed) and finding counts (fixed, open, new,
+  and unverified as "not re-checked": on screens this run did not reach, so neither fixed nor open)
   from <stem>.data/diff.json, and the tasks whose walk result changed (`diff.json.tasks`, prev against now).
 A block missing from blocks.json: drop it and say in one sentence why (for example "no object goes by two names").
 Evidence: quote walkers' think-aloud lines verbatim in quotes from <stem>.data/walks/<task>.json (`steps[].think`, `survey.comment`),

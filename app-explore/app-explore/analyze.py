@@ -3,18 +3,20 @@
 
     python3 analyze.py <stem>.data [--since <prev stem>.data]
 
-Reads graph.json, screens/, perceive.json, model.json, scent.json, walks/*.json, critique/*.json, leaks.jsonl and
-run.json from the data dir (each optional except graph.json); every question, rule, gate and clarity weight comes
-from rubric.json beside this file. Writes findings.json, scores.json, needs_check.json, screens.json, objects.json
-and tasks.json into the data dir. Models perceive, the rules decide: an answer outside the confidence gate never
-becomes a finding, it is listed in needs_check.json.
+Reads graph.json, screens/, perceive.json, model.json, synonyms.json, scent.json, walks/*.json, critique/*.json,
+leaks.jsonl and run.json from the data dir (each optional except graph.json); every question, rule, gate, threshold and
+clarity weight comes from rubric.json beside this file. Writes findings.json, scores.json, needs_check.json,
+screens.json, objects.json and tasks.json into the data dir. Models perceive, the rules decide: an answer outside the
+confidence gate never becomes a finding, it is listed in needs_check.json.
 
 With `--since` (a previous run's data dir, analysed before) it also writes diff.json and gives every finding a
-`status` (open: the same rule on the matching previous screen, else new); previous findings with no current match
-are `fixed`. Screens match by state key, else by route + kind + heading; a matched screen is `changed` when its
-dHash differs by more than 10 bits, its clarity by 10 or more, or its interactive labels' Jaccard is under 0.8.
+`status` (open: the same rule on the matching previous screen, or for a walk the same task, else new). A previous
+finding with no current match is `fixed` when this run looked again (its screen matched, or its task was walked),
+else `unverified`. Screens match by state key, else by route + kind + heading; a matched screen is `changed` past the
+rubric.json `since` thresholds (dHash bits, clarity delta, interactive-label Jaccard).
 """
 import json
+import re
 import sys
 from collections import deque
 from pathlib import Path
@@ -58,7 +60,9 @@ def labels_of(screen):
     return {norm(m.get("label")) for m in (screen or {}).get("marks", []) if norm(m.get("label"))}
 
 
-CHANGED = {"hash_bits": 10, "clarity_delta": 10, "jaccard": 0.8}  # plan step 7 thresholds
+def route_re(route):
+    """Regex for a crawl route (`:id` stands for one path segment)."""
+    return re.compile("^" + "/".join("[^/#]+" if s == ":id" else re.escape(s) for s in str(route or "").split("/")) + "$")
 
 
 def same_word(a, b):
@@ -152,6 +156,7 @@ class Run:
             self.walks[w.get("task") or p.stem] = w
         self.critique = [c for p in sorted((self.data / "critique").glob("*.json")) for c in load(p, [])]
         self.leaks = jsonl(self.data / "leaks.jsonl")
+        self.synonyms = load(self.data / "synonyms.json", [])
         self.depth = bfs(self.graph["edges"], self.entry) if self.entry else {}
         self.findings = {}
         self.needs = []
@@ -243,16 +248,65 @@ class Run:
                 if marks:
                     self.add(rule, sid, "geometry", rule["text"], marks)
 
-    # naming: an object with several labels
+    def object_labels(self):
+        """{object id: distinct labels} after the judge's synonym checks (synonyms.json, written by pipeline.mjs): an
+        alias judged a different thing is dropped, a screen label judged the same joins, and two objects judged one
+        thing share their labels (the first in model order carries the finding). Undecided pairs go to needs_check."""
+        objs = {o["id"]: o for o in self.model["objects"]}
+        labels = {i: distinct_labels(o) for i, o in objs.items()}
+        root = {i: i for i in objs}
+        order = list(objs)
+
+        def find(i):
+            while root[i] != i:
+                i = root[i]
+            return i
+
+        for y in self.synonyms:
+            oid = y.get("object")
+            if not y.get("answer") or oid not in objs:
+                continue
+            decided, same, leaning, conf = gated(y["answer"], "bool", self.gate)
+            if not decided:
+                homes = objs[oid].get("homes") or [self.entry]
+                self.needs.append({"state": homes[0], "source": "naming", "question": "synonym", "answer": y,
+                                   "leaning": leaning, "rules": [r["id"] for r in self.rules_of("naming")],
+                                   "text": f"\"{y['a']}\" and \"{y['b']}\" the same thing? Leaning: {leaning} "
+                                           f"(p {round(conf, 2)}), outside the confidence gate."})
+                continue
+            if y.get("kind") == "alias" and not same:
+                labels[oid] = [x for x in labels[oid] if not same_word(x, y["b"])]
+            elif y.get("kind") == "label" and same and not any(same_word(x, y["b"]) for x in labels[oid]):
+                labels[oid].append(y["b"])
+            elif y.get("kind") == "objects" and same and y.get("other") in objs:
+                a, b = sorted((find(oid), find(y["other"])), key=order.index)
+                root[b] = a
+        groups = {}
+        for i in order:
+            groups.setdefault(find(i), []).append(i)
+        out = {}
+        for members in groups.values():
+            merged = []
+            for i in members:
+                merged += [x for x in labels[i] if not any(same_word(x, m) for m in merged)]
+            for i in members:
+                out[i] = merged
+        self.groups = groups
+        return out
+
+    # naming: an object (or objects the judge confirmed as one) with several labels
     def naming_findings(self):
         rule = self.rule("naming")
         if not rule:
             return
-        for o in self.model["objects"]:
-            labels = distinct_labels(o)
+        objs = {o["id"]: o for o in self.model["objects"]}
+        for first, members in self.groups.items():
+            o = objs[first]
+            labels = self.labels[first]
             if len(labels) >= rule["min_labels"] and o.get("homes"):
                 names = ", ".join(f'"{x}"' for x in labels)
-                self.add(rule, o["homes"][0], "naming", f"{rule['text']} {names}.", key=o["id"], object=o["id"])
+                self.add(rule, o["homes"][0], "naming", f"{rule['text']} {names}.", key=o["id"], object=o["id"],
+                         **({"objects": members[1:]} if len(members) > 1 else {}))
 
     # depth: target screens far from the start
     def depth_findings(self):
@@ -260,24 +314,39 @@ class Run:
         if not rule:
             return
         for t in self.model["tasks"]:
-            d = self.depth.get(t["target_state"])
+            d = self.depth.get(t.get("target_state"))
             if d is not None and holds(rule, d):
                 self.add(rule, t["target_state"], "depth", f"{rule['text']} \"{t['title']}\": {d} clicks.",
                          tasks=[t["id"]])
 
+    def url_state(self, url, route=True):
+        """State of a page URL: exact url, else a page with the same path, else (with `route`) a page whose crawl
+        route matches; None."""
+        if not url:
+            return None
+        for sid in self.order:
+            if self.states[sid].get("url") == url:
+                return sid
+        parts = urlsplit(url)
+        pages = [sid for sid in self.order if self.states[sid]["kind"] == "page"]
+        for sid in pages:
+            if urlsplit(self.states[sid].get("url", "")).path == parts.path:
+                return sid
+        if not route:
+            return None
+        path = parts.path
+        if parts.fragment.startswith(("/", "!")):
+            path += "#" + parts.fragment.lstrip("!").split("?")[0]
+        for sid in pages:
+            if route_re(self.states[sid].get("route")).match(path):
+                return sid
+        return None
+
     def walk_state(self, walk, task):
-        """State where a walk ended: exact url, else same path, else the task's target."""
+        """State where a walk ended: the state of its last URL (url or path), else the task's target, else the entry."""
         steps = walk.get("steps") or []
         url = steps[-1].get("url") if steps else None
-        if url:
-            for sid in self.order:
-                if self.states[sid].get("url") == url:
-                    return sid
-            path = urlsplit(url).path
-            for sid in self.order:
-                if urlsplit(self.states[sid].get("url", "")).path == path and self.states[sid]["kind"] == "page":
-                    return sid
-        return (task or {}).get("target_state") or self.entry
+        return self.url_state(url, route=False) or (task or {}).get("target_state") or self.entry
 
     # walk: persona task walks
     def walk_findings(self):
@@ -285,6 +354,8 @@ class Run:
         for tid, w in self.walks.items():
             t = tasks.get(tid, {})
             title = t.get("title", tid)
+            if tid in tasks and not t.get("target_state"):
+                title += " (target screen not found in this crawl)"
             wrong = sum(1 for s in w.get("steps", []) if s.get("confused"))
             ease = (w.get("survey") or {}).get("ease")
             thinks = [s.get("think") for s in w.get("steps", []) if s.get("think")]
@@ -297,7 +368,8 @@ class Run:
                     continue
                 turns = f"{wrong} wrong turn{'' if wrong == 1 else 's'}"
                 detail = f" \"{title}\": {w.get('clicks')} clicks, {turns}, ease {ease}.{quote}"
-                self.add(rule, self.walk_state(w, t), "walk", rule["text"] + detail, tasks=[tid])
+                # one finding per task: walks that end on the same screen (or off the graph) stay apart
+                self.add(rule, self.walk_state(w, t), "walk", rule["text"] + detail, key=tid, task=tid, tasks=[tid])
 
     # scent: first click from the entry screen
     def scent_findings(self):
@@ -307,6 +379,11 @@ class Run:
         tasks = {t["id"]: t for t in self.model["tasks"]}
         for tid, s in self.scent.items():
             if s.get("correct") is None or s["correct"] != rule["correct"]:
+                continue
+            if (s.get("p") or 0) < self.gate["choice"]:
+                self.needs.append({"state": s["entry"], "source": "scent", "question": "first_click", "answer": s,
+                                   "leaning": True, "rules": [rule["id"]],
+                                   "text": f"task {tid}: predicted mark {s['predicted_mark']} at p={s.get('p')}, outside the gate"})
                 continue
             labels = {m["n"]: m["label"] for m in self.screens.get(s["entry"], {}).get("marks", [])}
             want = (f"mark {s['shortest_first_mark']} \"{labels.get(s['shortest_first_mark'], '')}\""
@@ -321,9 +398,13 @@ class Run:
         for rule in self.rules_of("leak"):
             if self.run.get("mode", "readonly") != rule["mode"]:
                 continue
+            tasks = {t["id"]: t for t in self.model["tasks"]}
             for x in self.leaks:
-                sid = x.get("state") if x.get("state") in self.states else self.entry
-                self.add(rule, sid, "leak", f"{rule['text']} {x.get('method')} {x.get('url')} ({x.get('status')}).")
+                sid = x.get("state") if x.get("state") in self.states else self.url_state(x.get("page")) or self.entry
+                task = x.get("task")
+                walk = f" during the walk of task {task} \"{tasks.get(task, {}).get('title', task)}\"" if task else ""
+                self.add(rule, sid, "leak", f"{rule['text']} {x.get('method')} {x.get('url')} ({x.get('status')}){walk}.",
+                         **({"tasks": [task]} if task else {}))
 
     # critic: deep critique by the slow model
     def critic_findings(self):
@@ -367,6 +448,7 @@ class Run:
         return round(100 * sum(parts) / len(parts)) if parts else None
 
     def write(self, since=None):
+        self.labels = self.object_labels()
         for step in (self.rubric_findings, self.geometry_findings, self.naming_findings, self.depth_findings,
                      self.walk_findings, self.scent_findings, self.leak_findings, self.critic_findings):
             step()
@@ -385,7 +467,7 @@ class Run:
                        if walked else None)
         objs = self.model["objects"]
         rule = self.rule("naming")
-        multi = sum(1 for o in objs if rule and len(distinct_labels(o)) >= rule["min_labels"])
+        multi = sum(1 for o in objs if rule and len(self.labels[o["id"]]) >= rule["min_labels"])
         scores = {"screens": clarity, "app": {
             "clarity": round(sum(known) / len(known)) if known else None,
             "findability": findability,
@@ -411,7 +493,7 @@ class Run:
             })
         objects = [{
             "id": o["id"], "name": o["name"], "class": o.get("class"), "aliases": o.get("aliases", []),
-            "labels": len(distinct_labels(o)), "attributes": o.get("attributes", []),
+            "labels": len(self.labels[o["id"]]), "attributes": o.get("attributes", []),
             "relationships": o.get("relationships", []), "ctas": o.get("ctas", []), "homes": o.get("homes", []),
             "representations": o.get("representations", []),
             "shown_as": list(dict.fromkeys(r["as"] for r in o.get("representations", []))),
@@ -465,16 +547,30 @@ class Run:
             c, pc = clarity.get(sid), pclarity.get(pid)
             delta = c - pc if c is not None and pc is not None else None
             jac = round(jaccard(labels_of(self.screens[sid]), labels_of(load(prev / "screens" / f"{pid}.json", {}))), 3)
-            if ((dist is not None and dist > CHANGED["hash_bits"]) or (delta is not None and abs(delta) >= CHANGED["clarity_delta"])
-                    or jac < CHANGED["jaccard"]):
+            ch = self.rubric["since"]
+            if ((dist is not None and dist > ch["hash_bits"]) or (delta is not None and abs(delta) >= ch["clarity_delta"])
+                    or jac < ch["jaccard"]):
                 changed.append({"id": sid, "prev": pid, "dist": dist, "clarity_delta": delta, "jaccard": jac})
 
-        # findings: the same rule (and object, for naming) on the matching previous screen is the same finding
-        now = {(f["rule"], match.get(f["state"]), f.get("object")) for f in findings}
-        before = {(f["rule"], f["state"], f.get("object")) for f in pfindings}
+        # findings: the same rule (and object, for naming) on the matching previous screen is the same finding; a walk
+        # finding is the same finding when it is about the same task, wherever the walk ended
+        def walk_task(f):
+            return (f.get("task") or (f.get("tasks") or [None])[0]) if f.get("source") == "walk" else None
+
+        def ident(f, state):
+            task = walk_task(f)
+            return (f["rule"], task) if task else (f["rule"], state, f.get("object"))
+
+        now = {ident(f, match.get(f["state"])) for f in findings}
+        before = {ident(f, f["state"]) for f in pfindings}
         for f in findings:
-            f["status"] = "open" if (f["rule"], match.get(f["state"]), f.get("object")) in before else "new"
-        fixed = [f["id"] for f in pfindings if (f["rule"], f["state"], f.get("object")) not in now]
+            f["status"] = "open" if ident(f, match.get(f["state"])) in before else "new"
+        # a previous finding no longer firing is `fixed` only where this run looked again: its screen was matched, or
+        # (walk findings) its task was walked again; else `unverified` (this run did not reach that screen)
+        rechecked = lambda f: walk_task(f) in self.walks if walk_task(f) else f["state"] in matched
+        gone = [f for f in pfindings if ident(f, f["state"]) not in now]
+        fixed = [f["id"] for f in gone if rechecked(f)]
+        unverified = [f["id"] for f in gone if not rechecked(f)]
 
         pobjects = {o["id"]: o for o in load(prev / "objects.json", [])}
         cobjects = {o["id"]: o for o in objects}
@@ -500,6 +596,7 @@ class Run:
                       for i in list(ctasks) + [i for i in ptasks if i not in ctasks]},
             "findings": {
                 "fixed": fixed,
+                "unverified": unverified,
                 "open": [f["id"] for f in findings if f["status"] == "open"],
                 "new": [f["id"] for f in findings if f["status"] == "new"],
             },
@@ -510,7 +607,7 @@ class Run:
         rows = []
         for t in self.model["tasks"]:
             w = self.walks.get(t["id"])
-            shortest = self.depth.get(t["target_state"])
+            shortest = self.depth.get(t.get("target_state"))
             clicks = w.get("clicks") if w else None
             success = bool(w.get("success")) if w else None
             directness = (round(min(1.0, shortest / clicks), 3) if success and clicks and shortest is not None
@@ -519,7 +616,7 @@ class Run:
             rows.append({
                 "id": t["id"], "title": t["title"], "persona": t["persona"],
                 "persona_name": personas.get(t["persona"], {}).get("name"), "object": t.get("object"),
-                "verb": t.get("verb"), "target_state": t["target_state"], "shortest": shortest,
+                "verb": t.get("verb"), "target_state": t.get("target_state"), "shortest": shortest,
                 "scent_correct": (self.scent.get(t["id"]) or {}).get("correct"), "walked": w is not None,
                 "success": success, "clicks": clicks, "directness": directness,
                 "ease": survey.get("ease"), "confidence": survey.get("confidence"),
@@ -546,7 +643,8 @@ def main(argv):
     if diff:
         s, f = diff["screens"], diff["findings"]
         print(f"since {diff['since']}: screens {len(s['new'])} new, {len(s['removed'])} removed, {len(s['changed'])} changed; "
-              f"findings {len(f['new'])} new, {len(f['open'])} open, {len(f['fixed'])} fixed")
+              f"findings {len(f['new'])} new, {len(f['open'])} open, {len(f['fixed'])} fixed, "
+              f"{len(f['unverified'])} unverified")
 
 
 if __name__ == "__main__":
