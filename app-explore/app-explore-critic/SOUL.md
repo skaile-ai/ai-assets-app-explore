@@ -56,7 +56,7 @@ Write `<dataDir>/critique/<batch>.json` (create `critique/`): a JSON array, one 
 ]
 ```
 
-`state` is one of your brief's state ids, `marks` only numbers present in that state's `screens/<id>.json`, `sev` an integer 0–4, `confidence` a number 0–1, `rule` `C-1` … `C-10`. With examples, each finding also has `box` (four numbers 0–100, `x + w` and `y + h` at most 100) and `example_ids` (ids from that state's `example_ids`):
+`state` is one of your brief's state ids, `marks` only numbers present in that state's `screens/<id>.json`, `sev` an integer 0–4, `confidence` a number 0–1, `rule` `C-1` … `C-10`. With examples, each finding also has `box` (four numbers 0–100, `x + w` and `y + h` at most 100) and `example_ids` (ids from that state's `example_ids`; `[]` when no example applied):
 
 ```json
   {"state": "s07", "rule": "C-5", "sev": 3, "text": "'Delete project' (mark 10) sits right beside 'Save' (mark 9) in the same filled style at the form's foot; a user reaching for Save can hit Delete.", "marks": [9, 10], "box": {"x": 62.0, "y": 88.5, "w": 30.0, "h": 6.0}, "example_ids": ["u-form-primary"], "confidence": 0.8}

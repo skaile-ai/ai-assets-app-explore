@@ -6,9 +6,9 @@ Read this only when `run.json.features.examples` is true. It changes the critic 
 
 `criticBrief` adds the picked example critiques and, per state, the ids of the examples matched to the judge's `screen_type` answer (how many: rubric.json `examples.per_screen`). The bank is `examples/critiques.json`: critiques adapted from UICrit (CC BY 4.0, see `examples/ATTRIBUTION.txt`) plus critiques from earlier app-explore runs. The UICrit examples come without their RICO screenshots: the critic reads their text and box as the description, and the brief needs no image.
 
-Every critic finding then carries a `box` (`{x, y, w, h}` in viewport percent) and `example_ids`.
+Every critic finding then carries a `box` (`{x, y, w, h}` in viewport percent) and `example_ids` (`[]` when no example applied).
 
-**Done when** every finding in `critique/c1.json` has `box` and `example_ids`.
+**Done when** every finding in `critique/c1.json` has `box` and an `example_ids` array (`[]` counts: no example applied to that finding).
 
 ## Step 7
 

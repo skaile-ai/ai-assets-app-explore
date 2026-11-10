@@ -234,7 +234,9 @@
       "I found the system very cumbersome to use.",
       "I felt very confident using the system.",
       "I needed to learn a lot of things before I could get going with this system."
-    ]
+    ],
+    "sus_suspect": { "max_distinct_odd": 1, "max_distinct_even": 1,
+      "text": "SUS answers by pattern: the odd items share one answer and the even items share one (all equal, or alternating perfectly). Such a walk is flagged sus_suspect and left out of every SUS mean." }
   },
   "personas": {
     "literacy": ["low", "medium", "high"],

@@ -561,10 +561,11 @@ function chunkPick(answer, letters, n) {
 
 /**
  * Sequential first-click scent along each task's shortest path (rubric.json `features.scent_path`; off: returns
- * {skipped}). Per path state, from the entry to the state before the task's target_state, the judge sees the
- * state's marks in reading order, `scent.chunk_size` at a time (capped at `scent.max_marks`), and picks one of the
- * chunk's lettered marks or `next`; `next` shows the following chunk in the next round. Every call is a judge call
- * of kind `path_scent`. Adds `steps[]` to each task of <data>/scent.json (run `scent` first): per path state
+ * {skipped}). Per path state, from the entry to the state before the task's target_state, the judge sees the marks
+ * the entry check offers (the first `scent.max_marks` by mark number) in reading order, `scent.chunk_size` at a
+ * time, and picks one of the chunk's lettered marks or `next`; `next` shows the following chunk in the next round.
+ * Every call is a judge call of kind `path_scent`. Adds `steps[]` to each task of <data>/scent.json (run `scent`
+ * first): per path state
  * `{step, state, chunk, chunks, predicted, expected, expected_chunk, correct, premature, p}`; `predicted: null` means
  * `next` on the last chunk (nothing here looks right). `correct` is null when the judge gave no answer or every
  * expected control has a mark beyond the cap; false when the path's control has no mark at all. `premature`: a wrong
@@ -592,7 +593,8 @@ export async function pathScent({ judgeBatch }, { dataDir, concurrency = 16 }) {
     const n = d[entry.id] ?? 0;
     for (let cur = entry.id, i = 0; d[cur] > 0; i++) {
       const screen = await screenOf(cur);
-      const order = readingOrder(screen.marks ?? []).slice(0, cap);
+      // the same marks `scent` offers on the entry (the first max_marks by index), presented in reading order
+      const order = readingOrder((screen.marks ?? []).slice(0, cap));
       const chunks = Array.from({ length: Math.ceil(order.length / size) }, (_, c) => order.slice(c * size, (c + 1) * size));
       const nextEdges = graph.edges.filter((e) => e.from === cur && d[e.to] === d[cur] - 1);
       const markOf = (e) => edgeMark(e, screen.marks ?? [], byId[e.to]?.url);

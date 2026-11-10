@@ -59,7 +59,7 @@ Then run `analyze.py` again exactly as in step 7: walk violations become `M-expe
 ## Step 7: `M-expectation`
 
 With `mentalmodel.json` present, `analyze.py` adds one `M-expectation` finding per state and violation kind (source `mental`, id `M-expectation@<8 hex>-<kind>`, `violations`: the violation ids, `tasks` for walk ones; severity per kind from rubric.json).
-It sits on the state the click led to; a walk step that left the crawled graph lands on its task's `target_state`, else the entry, and the text names the URL. A `naming` violation whose two names already are one object's labels, or a pair `synonyms.json` judged two different things, adds nothing. Undecided crawl matches go to `needs_check.json`.
+It sits on the state the click led to; a walk step that left the crawled graph lands on its task's `target_state`, else the entry, and the text names the URL. A `naming` violation whose two names already are one object's labels, or a pair `synonyms.json` judged two different things, adds nothing. An undecided crawl match (`matches: null`) goes to `needs_check.json` together with the violations the update logged on that step; none of them becomes a finding.
 
 ## Step 9 blocks
 

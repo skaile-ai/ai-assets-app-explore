@@ -43,18 +43,27 @@ export async function walkInKernel({ ax, browser, completion, persona, variant =
   };
   const Q = rubric.seq;
   const rate = (v, hi) => (Number.isInteger(v) && v >= 1 && v <= hi ? v : null);
+  // With seq, every step after the first rates the action before it (`last_seq`, required): the first look has no
+  // last action, so it uses STEP; the last step is rated in the survey.
+  let STEP_NEXT = STEP;
   if (seqOn) {
-    const lastSeq = (what) => ({ type: ['integer', 'null'], minimum: 1, maximum: 7, description: `${what}: ${Q.question}` });
-    STEP.required.push('last_seq');
-    STEP.properties.last_seq = lastSeq('your LAST action, null when there was none');
-    SURVEY.required.push('last_seq', 'sus');
+    const lastSeq = (what) => ({ type: 'integer', minimum: 1, maximum: 7, description: `${what}: ${Q.question}` });
+    STEP_NEXT = { ...STEP, required: [...STEP.required, 'last_seq'],
+      properties: { ...STEP.properties, last_seq: lastSeq('your LAST action') } };
+    // SUS: one property per statement, in the standard wording, so each one is answered on its own
+    SURVEY.required.push('last_seq', ...Q.sus_items.map((_, k) => `sus${k + 1}`));
     SURVEY.properties.last_seq = lastSeq('your final step');
-    SURVEY.properties.sus = { type: 'array', minItems: 10, maxItems: 10, items: { type: 'integer', minimum: 1, maximum: 5 },
-      description: `your answers to the 10 statements in order, ${Q.sus_scale}` };
+    Q.sus_items.forEach((x, k) => {
+      SURVEY.properties[`sus${k + 1}`] = { type: 'integer', minimum: 1, maximum: 5, description: `${x} (${Q.sus_scale})` };
+    });
   }
   const rule = mode === 'readonly'
-    ? 'Never save, send, delete or submit. A create or edit task is done when its form is open with its submit control visible.'
+    ? 'Opening a form, menu or dialog is fine, but never press a control that changes data: save, send, delete, submit, ' +
+      'approve, reject, launch, run, confirm (when unsure whether it only opens a form, treat it as changing data). ' +
+      'A create, edit, approve, launch or run task is done when the control that would carry it out is on screen; ' +
+      'stop there without pressing it.'
     : 'Never log out.';
+  const GUARD = /app-explore: blocked/;
   const steps = [];
   let seq = 0, success = false;
   try {
@@ -63,7 +72,8 @@ export async function walkInKernel({ ax, browser, completion, persona, variant =
     for (let i = 0; i < 15; i++) {
       const m = (await ax.marks(tab)).filter((x) => !ax.denied(x.label, mode, x.href));
       const here = await tab.url();
-      const text = String(await tab.text()).replace(/\s+/g, ' ').slice(0, 3000);
+      const full = String(await tab.text());
+      const text = full.replace(/\s+/g, ' ').slice(0, 3000);
       const past = steps.map((s, k) => `${k + 1}. ${s.think} -> clicked ${s.mark} "${s.label}"`).join('\n') || '(none)';
       const last = steps[steps.length - 1];
       const lastLine = last ? `Your LAST action: clicked ${last.mark} "${last.label}", expecting: ${last.expected}. Compare with the screen below.`
@@ -72,10 +82,12 @@ export async function walkInKernel({ ax, browser, completion, persona, variant =
         `You are ${who}. Your task: ${task.title}.\n${rule}\n` +
         `Use only what the screen shows.\nYour steps so far:\n${past}\n${lastLine}\n\nScreen ${here}\nVisible text: ${text}\n\n` +
         `Clickable elements (mark: role "label"):\n${m.map((x) => `${x.n}: ${x.role} "${x.label}"`).join('\n')}`,
-        { schema: STEP });
+        { schema: last ? STEP_NEXT : STEP });
       if (last) {
         const o = String(r.last_outcome || '');
-        last.outcome = /^(as-expected|unexpected|no-change)/.test(o) ? o : 'no-change';
+        // the guard's own message appeared after the click: the outcome is the guard's, not the app's
+        last.outcome = last.guarded ? `blocked: the write guard rejected it${o ? ` (${o})` : ''}`
+          : /^(as-expected|unexpected|no-change)/.test(o) ? o : 'no-change';
         last.confused = !!r.last_confused || o.startsWith('unexpected');
         if (seqOn) last.seq = rate(r.last_seq, 7);
       }
@@ -89,21 +101,27 @@ export async function walkInKernel({ ax, browser, completion, persona, variant =
       steps.push({ url: here, think: r.think, action: 'click', mark: mk.n, label: mk.label, expected: r.expected,
         outcome: 'no-change', confused: false });
       await ax.act(tab);
-      try { await tab.click(`[data-apx-mark="${mk.n}"]`); } catch { steps[steps.length - 1].outcome = 'blocked: element not clickable'; }
+      try { await tab.click(`[data-apx-mark="${mk.n}"]`); } catch { steps[steps.length - 1].outcome = 'unexpected: element not clickable'; }
       await ax.quiet(tab);
+      if (mode === 'readonly' && !GUARD.test(full) && GUARD.test(String(await tab.text()))) {
+        Object.assign(steps[steps.length - 1], { outcome: 'blocked: the write guard rejected it', guarded: true });
+      }
       seq = await ax.auditLeaks(tab, dataDir, seq, { task: task.id });
     }
+    for (const x of steps) delete x.guarded;
     const s = await mt.complete(completion, 'walk_survey',
       `You are ${variant ? `${persona.name} (${variant.name})` : persona.name}. You just tried to: ${task.title}. Outcome: ${success ? 'reached' : 'not reached'}.\n` +
       `Your steps:\n${steps.map((x) => `- ${x.think} (${x.outcome})`).join('\n')}\n` +
       'Rate ease 1-5 (1 very hard), confidence 1-5 that the task is really done, and give one sentence of comment.' +
-      (seqOn ? `\nRate your final step (last_seq). Then answer each statement about this app (${Q.sus_scale}):\n` +
-        Q.sus_items.map((x, k) => `${k + 1}. ${x}`).join('\n') : ''),
+      (seqOn ? `\nRate your final step (last_seq). Then rate each statement below about this app (${Q.sus_scale}), ` +
+        'each on its own words, not by your earlier answers (sus1 … sus10):\n' +
+        Q.sus_items.map((x, k) => `sus${k + 1}. ${x}`).join('\n') : ''),
       { schema: SURVEY });
     if (seqOn) {
       if (steps.length) steps[steps.length - 1].seq = rate(s.last_seq, 7);
-      delete s.last_seq;
-      if (!(Array.isArray(s.sus) && s.sus.length === 10 && s.sus.every((x) => rate(x, 5)))) delete s.sus;
+      const sus = Q.sus_items.map((_, k) => s[`sus${k + 1}`]);
+      for (const k of ['last_seq', ...Q.sus_items.map((_, k) => `sus${k + 1}`)]) delete s[k];
+      if (sus.every((x) => rate(x, 5))) s.sus = sus;
     }
     const clicks = steps.filter((x) => x.action === 'click').length;
     const walk = { task: task.id, persona: persona.name, ...(variant ? { variant: variant.id } : {}), success, clicks, steps,

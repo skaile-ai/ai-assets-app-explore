@@ -196,6 +196,13 @@ class Run:
         self.walk_sets = {tid: [w] + variants.get(tid, []) for tid, w in base.items()}
         self.walk_sets.update((tid, ws) for tid, ws in variants.items() if tid not in base)
         self.walks = {tid: ws[0] for tid, ws in self.walk_sets.items()}
+        # readonly: a failed walk that ran into the write guard tested the guard, not the app. It counts as
+        # `blocked_by_guard` (tasks.json) with a needs_check entry, and in no walk finding, rate, SEQ or SUS;
+        # self.walks (the task rows) and self.all_walk_sets keep it.
+        self.all_walk_sets = self.walk_sets
+        self.guarded = {tid: g for tid, ws in self.walk_sets.items() if (g := [w for w in ws if self.guard_blocked(w)])}
+        self.walk_sets = {tid: kept for tid, ws in self.walk_sets.items()
+                          if (kept := [w for w in ws if not self.guard_blocked(w)])}
         self.critique = [c for p in sorted((self.data / "critique").glob("*.json")) for c in load(p, [])]
         self.leaks = jsonl(self.data / "leaks.jsonl")
         self.synonyms = load(self.data / "synonyms.json", [])
@@ -422,6 +429,18 @@ class Run:
         return f'{walk.get("persona")} ({names.get(v) or v})' if v else str(walk.get("persona"))
 
     @staticmethod
+    def guard_step(step):
+        """A walk step the readonly guard or deny-list stopped: outcome `blocked…`, or the guard's own message
+        ('app-explore: blocked') in its outcome or think-aloud."""
+        outcome = str(step.get("outcome") or "")
+        return outcome.startswith("blocked") or "app-explore: blocked" in f'{outcome} {step.get("think") or ""}'
+
+    def guard_blocked(self, walk):
+        """Readonly: a failed walk with a step the guard stopped (its failure follows that step)."""
+        return (self.run.get("mode", "readonly") == "readonly" and not walk.get("success")
+                and any(self.guard_step(s) for s in walk.get("steps") or []))
+
+    @staticmethod
     def struggled(walk, rule):
         """A successful walk with at least `min_wrong_turns` confused steps or an ease at or below `max_ease`."""
         wrong = sum(1 for s in walk.get("steps", []) if s.get("confused"))
@@ -435,6 +454,19 @@ class Run:
         tasks = {t["id"]: t for t in self.model["tasks"]}
         rules = self.rules_of("walk")
         fail = next((r for r in rules if not r["success"]), None)
+        would = [r["id"] for r in rules if not r["success"]] + ([r["id"] for r in self.rules_of("seq")]
+                                                                  if self.features.get("seq") else [])
+        for tid, ws in self.guarded.items():
+            t = tasks.get(tid, {})
+            for w in ws:
+                i, s = next((i, s) for i, s in enumerate(w.get("steps") or [], 1) if self.guard_step(s))
+                what = f'{s.get("action")} "{s["label"]}"' if s.get("label") else s.get("action")
+                self.needs.append({
+                    "state": self.url_state(s.get("url")) or self.walk_state(w, t), "source": "walk",
+                    "question": "blocked_by_guard", "task": tid, "leaning": None, "rules": would,
+                    "text": f'"{t.get("title", tid)}" ({self.walker(w)}) failed after the readonly write guard stopped '
+                            f'step {i} ({what}): the walk tested the guard, not the app, and counts in no walk finding. '
+                            f'Check by hand whether that control does the task.'})
         for tid, ws in self.walk_sets.items():
             t = tasks.get(tid, {})
             title = t.get("title", tid)
@@ -586,7 +618,7 @@ class Run:
         (a walk step off the crawled graph: the task's target, else the entry; the text names the URL), one finding
         per state and violation kind. A naming violation whose two names the naming rule already holds as one object's
         labels, or that the synonym check judged two different things, is that check's call and adds nothing. Crawl
-        matches outside the gate go to needs_check."""
+        matches outside the gate go to needs_check, and so do the violations the update logged on such a step."""
         if not self.features.get("mental_model"):
             return
         mm = load(self.data / "mentalmodel.json")
@@ -595,29 +627,42 @@ class Run:
             return
         tasks = {t["id"]: t for t in self.model["tasks"]}
         heading = lambda sid: (self.states.get(sid) or {}).get("heading") or (self.states.get(sid) or {}).get("title") or sid
+        clean = lambda s: str(s or "").strip().rstrip(".")
+        by_id = {v.get("id"): v for v in mm.get("violations", [])}
+        undecided = set()
         for t in mm.get("timeline", []):
-            if t.get("source") == "crawl" and t.get("step") and t.get("matches") is None and t.get("p") is not None:
-                pred = t.get("predicted") or {}
-                leaning = gated({"bool": t["p"]}, "bool", self.gate)[2]
-                self.needs.append({"state": t["state"], "source": "mental", "question": "matches", "answer": {"bool": t["p"]},
-                                   "leaning": leaning, "rules": [rules[next(iter(rules))]["id"]],
-                                   "text": f"Clicking \"{t.get('label')}\" on \"{heading(t.get('from'))}\": does it show what a "
-                                           f"first-time user predicted ({pred.get('kind')} \"{pred.get('heading')}\")? "
-                                           f"Leaning: {leaning} (p {t['p']}), outside the confidence gate."})
+            if not (t.get("source") == "crawl" and t.get("step") and t.get("matches") is None):
+                continue
+            vs = [by_id[i] for i in t.get("violations") or [] if i in by_id]
+            if t.get("p") is None and not vs:
+                continue  # judge outage, nothing logged: mentalmodel.json `errors` reports it
+            undecided.update(v["id"] for v in vs)
+            pred = t.get("predicted") or {}
+            leaning = gated({"bool": t["p"]}, "bool", self.gate)[2] if t.get("p") is not None else None
+            logged = "".join(f" Logged {v.get('kind')}: {clean(v.get('observed'))}." for v in vs)
+            self.needs.append({"state": t["state"], "source": "mental", "question": "matches", "answer": {"bool": t.get("p")},
+                               "leaning": leaning, "rules": [rules[next(iter(rules))]["id"]],
+                               **({"violations": [v["id"] for v in vs]} if vs else {}),
+                               "text": f"Clicking \"{t.get('label')}\" on \"{heading(t.get('from'))}\": does it show what a "
+                                       f"first-time user predicted ({pred.get('kind')} \"{pred.get('heading')}\")? "
+                                       + (f"Leaning: {leaning} (p {t['p']}), outside the confidence gate."
+                                          if t.get("p") is not None else "The judge gave no answer.") + logged})
         for v in mm.get("violations", []):
             rule = rules.get(v.get("kind"))
-            if not rule or (v["kind"] == "naming" and self.mental_naming_known(v)):
+            if not rule or v.get("id") in undecided or (v["kind"] == "naming" and self.mental_naming_known(v)):
                 continue
             task = v.get("task")
             sid = v.get("state") if v.get("state") in self.states else None
-            off = "" if sid else f" (at {v.get('url')}, outside the crawl)" if v.get("url") else ""
+            to = (f'"{heading(sid)}"' if sid else f"{v.get('url')} (outside the crawl)" if v.get("url")
+                  else "a screen outside the crawl")
             sid = sid or (tasks.get(task, {}).get("target_state") if tasks.get(task, {}).get("target_state") in self.states
                           else self.entry)
             names = " / ".join(f'"{x}"' for x in v.get("names") or [])
-            where = (f" Task \"{tasks.get(task, {}).get('title', task)}\", step {v.get('walk_step', 0) + 1}:" if v.get("source") == "walk"
-                     else f" On \"{heading(v.get('from'))}\":")
-            text = (f"{rule['text']}{where} clicked \"{v.get('label')}\"{off}{', names ' + names if names else ''}; "
-                    f"expected {v.get('expected')}; got {v.get('observed')}.")
+            click = f"clicking \"{v.get('label')}\"" if v.get("label") else "this step"
+            where = (f" Task \"{tasks.get(task, {}).get('title', task)}\", step {(v.get('walk_step') or 0) + 1}: {click}"
+                     if v.get("source") == "walk" else f" {click[0].upper()}{click[1:]} on \"{heading(v.get('from'))}\"")
+            text = (f"{rule['text']}{where} led to {to}{', names ' + names if names else ''}: "
+                    f"expected {clean(v.get('expected'))}; got {clean(v.get('observed'))}.")
             self.add(rule, sid, "mental", text, confidence=v.get("p") or 1.0, key=v["kind"], violations=[v["id"]],
                      **({"tasks": [task]} if task in tasks else {}))
 
@@ -839,15 +884,17 @@ class Run:
                 "verb": t.get("verb"), "target_state": t.get("target_state"), "shortest": shortest,
                 "scent_correct": (self.scent.get(t["id"]) or {}).get("correct"), "walked": w is not None,
                 "success": success, "clicks": clicks, "directness": directness,
-                "ease": survey.get("ease"), "confidence": survey.get("confidence"), **self.seq_cols(w),
+                "ease": survey.get("ease"), "confidence": survey.get("confidence"), **self.seq_cols(w, t["id"]),
                 **self.fanout_cols(t["id"]),
+                **({"blocked_by_guard": len(g)} if (g := self.guarded.get(t["id"])) else {}),
             })
         return rows
 
     def fanout_cols(self, tid):
-        """tasks.json columns of feature personas > 1, over the base walk and its variants: `walks` (n), `successes`,
-        `rate` with its Wilson 95 % interval `rate_ci` [lo, hi], median and range of clicks and ease; with `seq` the
-        mean and range of SUS. None of them when the feature is off."""
+        """tasks.json columns of feature personas > 1, over the base walk and its variants (without guard-blocked
+        walks): `walks` (n), `successes`, `rate` with its Wilson 95 % interval `rate_ci` [lo, hi], median and range of
+        clicks and ease; with `seq` the mean and range of SUS without walks answered by pattern, and their count
+        `sus_suspect_walks`. None of them when the feature is off."""
         if not self.fanout:
             return {}
         ws = self.walk_sets.get(tid) or []
@@ -860,8 +907,9 @@ class Run:
                "rate_ci": list(wilson(k, n, self.rubric["personas"]["wilson_z"])) if n else None,
                "clicks_median": median(clicks), "clicks_range": span(clicks), "ease_median": median(ease)}
         if self.features.get("seq"):
-            sus = [x for w in ws if (x := sus_score((w.get("survey") or {}).get("sus"))) is not None]
-            out.update(sus_mean=round(sum(sus) / len(sus), 1) if sus else None, sus_range=span(sus))
+            sus = [x for w in ws if (x := self.walk_sus(w)) is not None]
+            out.update(sus_mean=round(sum(sus) / len(sus), 1) if sus else None, sus_range=span(sus),
+                       sus_suspect_walks=sum(1 for w in ws if self.sus_suspect(w)))
         return out
 
     # ---------------------------------------------------------------- seq: step difficulty and SUS (feature `seq`)
@@ -890,29 +938,48 @@ class Run:
                         self.add(rule, state, "seq", text, key=tid, task=tid, tasks=[tid])
                     before = v
 
-    def seq_cols(self, walk):
-        """tasks.json columns of feature `seq`: SEQ per step, each step's label (else action) from the same walk, and
-        the walk's SUS; none when the feature is off."""
+    def seq_cols(self, walk, tid):
+        """tasks.json columns of feature `seq`: SEQ per step, each step's label (else action) from the same walk, the
+        walk's SUS (null when answered by pattern: `sus_suspect` true), and `seq_missing` = per walk of the task
+        (task id for the base walk, else the variant id) its steps without a SEQ rating; none when the feature is off."""
         if not self.features.get("seq"):
             return {}
         steps = (walk or {}).get("steps") or []
+        missing = {(w.get("variant") or tid): sum(1 for s in w.get("steps") or [] if seq_of(s) is None)
+                   for w in self.all_walk_sets.get(tid) or []}
         return {"seq": [seq_of(s) for s in steps] if walk else None,
                 "seq_labels": [s.get("label") or s.get("action") or "" for s in steps] if walk else None,
-                "sus": sus_score(((walk or {}).get("survey") or {}).get("sus"))}
+                "seq_missing": missing if walk else None,
+                "sus": self.walk_sus(walk or {}), "sus_suspect": self.sus_suspect(walk or {})}
+
+    def sus_suspect(self, walk):
+        """SUS answered by pattern (rubric.json `seq.sus_suspect`): ten valid answers whose odd items take at most
+        `max_distinct_odd` values and even items at most `max_distinct_even` (all equal, or alternating perfectly)."""
+        items = (walk.get("survey") or {}).get("sus")
+        rule = self.rubric["seq"]["sus_suspect"]
+        return (sus_score(items) is not None and len(set(items[0::2])) <= rule["max_distinct_odd"]
+                and len(set(items[1::2])) <= rule["max_distinct_even"])
+
+    def walk_sus(self, walk):
+        """A walk's SUS 0-100; None without 10 valid answers or when answered by pattern."""
+        return None if self.sus_suspect(walk) else sus_score((walk.get("survey") or {}).get("sus"))
 
     def sus_scores(self, tasks):
         """scores.json app keys of feature `seq`: mean SUS over walks (with feature personas every walk of a task, its
-        variants included) and per persona; none when the feature is off."""
+        variants included; guard-blocked walks and walks answered by pattern left out) and per persona, and
+        `sus_suspect` = the walks left out for their answer pattern; none when the feature is off."""
         if not self.features.get("seq"):
             return {}
         mean = lambda xs: round(sum(xs) / len(xs), 1) if xs else None
-        per = {}
+        per, suspect = {}, 0
         for t in tasks:
             for w in self.walk_sets.get(t["id"]) or []:
-                x = sus_score((w.get("survey") or {}).get("sus"))
+                suspect += self.sus_suspect(w)
+                x = self.walk_sus(w)
                 if x is not None:
                     per.setdefault(t["persona"], []).append(x)
-        return {"sus": mean([x for xs in per.values() for x in xs]), "sus_personas": {p: mean(xs) for p, xs in per.items()}}
+        return {"sus": mean([x for xs in per.values() for x in xs]), "sus_personas": {p: mean(xs) for p, xs in per.items()},
+                "sus_suspect": suspect}
 
     @staticmethod
     def directness(walk, shortest):

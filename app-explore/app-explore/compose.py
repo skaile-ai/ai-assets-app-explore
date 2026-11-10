@@ -77,6 +77,7 @@ T = {
                          "scent": "first click", "critic": "expert critique", "depth": "click depth", "leak": "write leak",
                          "seq": "step rating", "saliency": "attention model", "mental": "first-time expectation"},
         "sus_col": "SUS (0-100)", "sus_was": "{now} (was {prev})",
+        "sus_pattern": "{now}; {n} answered by pattern, left out", "walk_guard": "{now}; {n} stopped by the write guard",
         "t_cols_fan": ["Success (95 % CI)", "Clicks (median, range)", "Ease (median)"], "sus_col_fan": "SUS (mean, range)",
         "seq_label": "Step difficulty per task (SEQ, 1 very difficult to 7 very easy)",
         "seq_summary": "[[t-{id}]]: SEQ per step; SUS {sus}.", "seq_step": "{i}. {what}",
@@ -135,6 +136,7 @@ T = {
                          "scent": "erster Klick", "critic": "Expertenkritik", "depth": "Klicktiefe", "leak": "Schreibleck",
                          "seq": "Schrittbewertung", "saliency": "Aufmerksamkeitsmodell", "mental": "Erwartung neuer Nutzer"},
         "sus_col": "SUS (0-100)", "sus_was": "{now} (vorher {prev})",
+        "sus_pattern": "{now}; {n} nach Muster beantwortet, ausgelassen", "walk_guard": "{now}; {n} vom Schreibschutz gestoppt",
         "t_cols_fan": ["Erfolg (95-%-KI)", "Klicks (Median, Spanne)", "Leichtigkeit (Median)"],
         "sus_col_fan": "SUS (Mittel, Spanne)",
         "seq_label": "Schwierigkeit je Schritt und Aufgabe (SEQ, 1 sehr schwer bis 7 sehr leicht)",
@@ -447,6 +449,8 @@ class Compose:
                 walk = t["walk_none"] if not k.get("walked") else t["walk_ok"] if k.get("success") else t["walk_fail"]
                 clicks = k["clicks"] if isinstance(k.get("clicks"), int) else "—"
                 ease, sus = f"{k['ease']}/5" if k.get("ease") is not None else "—", self.sus_cell(k)
+            if k.get("blocked_by_guard"):
+                walk = t["walk_guard"].format(now=walk, n=k["blocked_by_guard"])
             rows.append({"anchor": "t-" + k["id"], "cells": [
                 safe(k.get("title")), safe(k.get("persona_name") or k.get("persona") or "—"),
                 {"ref": oid(k["object"])} if k.get("object") in self.obj_ids else safe(k.get("object") or "—"),
@@ -478,7 +482,8 @@ class Compose:
         if self.features.get("seq"):
             now = spread(k.get("sus_mean"), k.get("sus_range"))
             ps = prev.get("sus_mean") if prev.get("sus_mean") is not None else prev.get("sus")
-            cells.append(t["sus_was"].format(now=now, prev=self.num(ps)) if ps is not None else now)
+            now = t["sus_was"].format(now=now, prev=self.num(ps)) if ps is not None else now
+            cells.append(t["sus_pattern"].format(now=now, n=k["sus_suspect_walks"]) if k.get("sus_suspect_walks") else now)
         return cells
 
     # -- feature `seq`: SUS per task, SEQ per step --------------------------
@@ -492,7 +497,8 @@ class Compose:
             return []
         now = "—" if k.get("sus") is None else self.num(k["sus"])
         prev = ((((self.prev or {}).get("diff") or {}).get("tasks", {}).get(k["id"]) or {}).get("prev") or {}).get("sus")
-        return [self.t["sus_was"].format(now=now, prev=self.num(prev)) if prev is not None else now]
+        now = self.t["sus_was"].format(now=now, prev=self.num(prev)) if prev is not None else now
+        return [self.t["sus_pattern"].format(now=now, n=1) if k.get("sus_suspect") else now]
 
     def seq_tabs(self):
         """One tab per walked task: a bars chart of its steps' SEQ, coloured by the W-friction rule (red at or below

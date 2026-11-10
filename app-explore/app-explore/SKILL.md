@@ -65,7 +65,8 @@ Each feature that is on adds work to the steps below; its details live in its re
 `run.json.features` is the run's only record of the switches: every later step reads it (`await cfg.features(dataDir)`), never the arguments. A switch whose step does not read it has no effect, and a feature that is off writes no file and adds no finding.
 
 Every model call takes its role from `rubric.json` `models`, one role per call kind: `judge` (the cheap judge, `judgeBatch`) for bool, choice and score questions; `smol` for extraction, short generation and kernel walks; `slow` only for synthesis and the critic. The agents of steps 5, 6 and 8 are dispatched as `<agent>@<role>` with their role from `models` (`walker_agent`, `critic`). Change a role there, never in code.
-Each call is counted into `run.json.models[<kind>]` = `{role, calls, secs}` (plus `cost` when the judge reports one), summed across cells; agent runs are added with `cfg.recordAgent(dataDir, kind, { calls, secs })`.
+Each call is counted into `run.json.models[<kind>]` = `{role, calls, secs}` (plus `cost` when the judge reports one), summed across cells; agent runs are recorded with `cfg.recordAgent(dataDir, kind, { calls, secs })`.
+Only judge kinds report a cost: a kind without `cost` (`smol`, `slow` and agent kinds) is "cost not reported" wherever the run's cost is named, never 0.
 
 Files of the run, all under the reports dir: `<stem>.data/` (every data file), `<stem>.media/` (screenshots), later `<stem>.json`, `<stem>.choice.json`, `<stem>.html`. Write `run.json` now:
 
@@ -94,7 +95,7 @@ const o = await ax.openApp(browser, { url, dataDir, mode });   // tab "explore",
 
 The guard is already in place from step 2. In readonly mode it is an init script over `fetch`, `XMLHttpRequest`, `sendBeacon` and form submits that also answers "really?" confirms with no. Readonly means the crawler's and walkers' own clicks never write; the page itself still POSTs while it loads, and those writes pass.
 Every crawler click or key press is preceded by `ax.act(tab)`, which opens a 2-second **acting** window in the current document: inside it every write is rejected except POSTs matching an `allowPost` regex string, GraphQL bodies without `mutation`, and tRPC calls whose procedures all start with a read verb followed by a camelCase capital, `_`, a digit or the name's end (`getUser`, `list`; not `issueRefund`, `checkout`); outside it (page loads, timers) POST passes and PUT, PATCH, DELETE are still rejected.
-`tab.route` cannot filter by method, so the guard lives in the page. The deny-list (`ax.denied`) matches whole words at a word start (`Save`, `Delete project`, `Cancel order`, `Projekt löschen`; not `Saved items`, `Absender`, a lone `Cancel`).
+`tab.route` cannot filter by method, so the guard lives in the page. The deny-list (`ax.denied`) matches whole words at a word start (`Save`, `Delete project`, `Cancel order`, `Approve`, `Ablehnen`, `Projekt löschen`; not `Saved items`, `Approvals`, `Absender`, a lone `Cancel`). `Launch`, `Run` and `Starten` stay allowed because they often only open a form; the guard stops their write, and the walkers treat them like save (step 8).
 
 A passing load-time POST is not harmless by definition: it can create or change data (an app that creates a default project on first visit does so under the guard too). The guard cannot tell a bootstrap write from a read-only POST; it records them in `passive.jsonl` (`why: passive`), and the user decides what they mean. So an empty `leaks.jsonl` never means the data is unchanged: in readonly mode the chat shows the user the distinct passive write procedures (`procs`, step 4) after the crawl and again after the walks (step 8).
 
@@ -104,7 +105,7 @@ When a screen breaks because a click needs a read-only POST the rules miss (a se
 await ax.readOnly(o.tab, { mode, dataDir, allowPost: ['/api/search'] });
 ```
 
-Rejections land in `<stem>.data/blocked.jsonl`, writes the guard let through in `passive.jsonl` (`why`: passive, allow, graphql, trpc), writes that reached the server without such a pass in `leaks.jsonl`.
+Rejections land in `<stem>.data/blocked.jsonl` (`why`: `acting` = any write inside an acting window that no read pass let through, `method` = PUT/PATCH/DELETE outside it, `selfcheck`), writes the guard let through in `passive.jsonl` (`why`: passive, allow, graphql, trpc), writes that reached the server without such a pass in `leaks.jsonl`.
 Each row has `method`, `url`, `state` (the id of the state whose page made the write; `null` before the first state and in walks), `task` (the walk's task id; `null` in the crawl) and `page` (the URL it was made on); `analyze.py` places a leak without `state` on the state whose url, path or route matches `page`. The crawl calls both functions after every state; a step that drives its own tab calls them the same way:
 
 ```js
@@ -144,7 +145,7 @@ Read the `log` lines and `counts` as they come back:
 - `states` far below the budget and `queued: 0`: the app exposes few links; check `screens/s01.json` marks for navigation that is not an `<a href>` (it reached the crawl only through button clicks).
 - Many states with the same heading and different routes: item pages whose slug ids the `:id` pattern did not collapse eat the budget; raise `budgets.states` so the rest of the app is still reached.
 - `leaks > 0` in readonly mode: a write reached the server. Stop, show the user `leaks.jsonl`, and continue only after they confirm the app's data may change (then the run is `sandbox`).
-- `counts.blocked` is the number of rejected writes (`blocked.jsonl` lines without `why: "selfcheck"`): crawler clicks the guard stopped from writing, and PUT/PATCH/DELETE the page tried while loading.
+- `counts.blocked` is the number of rejected writes (`blocked.jsonl` lines without `why: "selfcheck"`): every write inside an acting window that no read pass let through (`why: "acting"`), the crawler's own click writes and the page's background writes (presence heartbeats, UI-state saves, read markers) that happen to fire in those 2 seconds alike, plus PUT/PATCH/DELETE outside it (`why: "method"`). A large count from background procedures is normal: those writes were stopped, not lost data.
 - The log shows the login page's heading and new states stop appearing: the session expired; redo step 2 and crawl again with the same `dataDir`.
 - `counts.stopped` is set (the tab died, usually a page whose script froze it): the states before it are complete on disk; keep them and go on with step 5. Do not move or delete the `.data`/`.media` directories to retry; a retry needs a fresh `browser.open` and a new stem.
 
@@ -159,7 +160,7 @@ const procs = Object.entries(Object.groupBy(passive, (r) => `${r.method} ${new U
 
 Then close the crawl tab: `await browser.close({ name: 'explore' })`. Steps 5-7 need no tab; a tab opened later (a redo of step 2, a check in step 8) is closed with `browser.close({ name })` at the end of the step that opened it.
 
-**Done when** every same-origin link in the main navigation of `s01` (header, sidebar or nav bar on `s01.som.png`) leads to a state in `graph.json`, every state has its `.png`, `.som.png` and `screens/<id>.json`, the `explore` tab is closed, and in readonly mode the chat shows the user `counts.blocked` and the distinct passive write procedures `procs` (method + path, count), or "no passive writes".
+**Done when** every same-origin link in the main navigation of `s01` (header, sidebar or nav bar on `s01.som.png`) that the state budget reached leads to a state in `graph.json` (when `budgets.states` is smaller than those links, or ran out before them, the chat names the nav links left out and the budget that left them out; that is not a failure), every state has its `.png`, `.som.png` and `screens/<id>.json`, the `explore` tab is closed, and in readonly mode the chat shows the user `counts.blocked` and the distinct passive write procedures `procs` (method + path, count), or "no passive writes".
 
 ## 5. Perceive every screen
 
@@ -247,6 +248,17 @@ Both agents run on their `rubric.json` `models` role (`walker_agent`, `critic`) 
 Walks run in waves with a barrier per wave, as many per wave as rubric.json `personas.walk_concurrency` allows: `local` for a local dev server (host `localhost` or `127.0.0.1`: every walker's full page load competes for the same dev server, and an unbundled one serves ~1500 modules per load), else `remote`.
 The walker gets the task's title, never its `target_state`: it must find the way like a user. With `since`, `model.tasks` already holds every previous task id plus the new ones (step 6), those whose screen is gone included, so the loop re-walks all of them; their results land in `diff.json.tasks` as `{prev, now}` after the re-run of `analyze.py`.
 
+Every cell of this step runs in the kernel of steps 1-7 and uses its `existsSync`, `helpers`, `ax`, `ap`, `cfg`, `rubric` and `dataDir`. After a kernel reset, load them again first:
+
+```js
+const { existsSync } = await import('node:fs');
+const helpers = [`${process.env.HOME}/.agents/skills/app-explore`, `${process.env.HOME}/.omp/agent/skills/app-explore`]
+  .find((d) => existsSync(`${d}/crawl.mjs`));
+const [ax, ap, cfg] = await Promise.all(['crawl', 'pipeline', 'config'].map((m) => import(`${helpers}/${m}.mjs`)));
+const rubric = await cfg.readRubric();
+const dataDir = '<reports dir>/<stem>.data';
+```
+
 ```js
 const model = JSON.parse(await Bun.file(`${dataDir}/model.json`).text());
 const run = JSON.parse(await Bun.file(`${dataDir}/run.json`).text());
@@ -298,12 +310,13 @@ Read the walk answers as they come back:
 
 - A walk that ended in `give-up` on the first screen with no marks usually means the page had not rendered or the session expired, not a usability problem: check `walks/<id>.json` `steps[0].url` and redo step 2 before believing it.
 - A `W-failed` or `W-struggle` walk whose think-aloud (`steps[].think`, `survey.comment`) talks about loading, a blank or empty screen, a spinner or "taking too long" measured load time, not usability: delete its `walks/<id>.json`, redo that walk alone (one walker, no other walk running) and re-run `analyze.py` before believing it.
+- In readonly mode a failed walk with a step the guard or deny-list stopped (outcome `blocked…`, or the guard's message `app-explore: blocked` in a step's outcome or think-aloud) tested the guard, not the app. `analyze.py` keeps it out of every `W-*` finding, success rate, findability and SUS, counts it in `tasks.json` `blocked_by_guard` and lists it in `needs_check.json` (question `blocked_by_guard`). Do not redo it, since a new walk meets the same guard; tell the user in the chat which tasks have guard-blocked walks and that a person has to try that control.
 - Any new line in `leaks.jsonl` after the walks in readonly mode: stop and show it to the user, as in step 4.
 - Recompute `procs` (step 4) after the walks: the walkers' passive writes land in `passive.jsonl` too.
 
 **Done when** all of these hold:
 
-- `walks/` has one file per task in `model.json` (each with `steps`, `success`, `clicks`, `survey`), and no `W-failed`/`W-struggle` finding rests on a walk whose think-aloud blames loading;
+- `walks/` has one file per task in `model.json` (each with `steps`, `success`, `clicks`, `survey`), no `W-failed`/`W-struggle` finding rests on a walk whose think-aloud blames loading, and every guard-blocked walk is in `needs_check.json`, not in a `W-*` finding;
 - `critique/c1.json` is a JSON array of findings with `state`, `rule` `C-1`…`C-10`, `sev`, `marks` and `confidence`;
 - `run.json.models` has `calls` for `walker_agent` and `critic`;
 - the re-run `findings.json` contains `W-*`, `S-scent` or `C-*` findings where the walks and critique gave reason;
@@ -401,6 +414,10 @@ with since: a `changed` item's Before toggle swaps the image to the previous sho
 Return the verdict, the three fixes, the autopilot chat line and the step-9 results.
 ```
 
-When it returns, `open <reports dir>/<stem>.html` and answer in chat: the verdict, the three fixes, the report as a Markdown link with an absolute `file://` URL, and the subagent's autopilot chat line.
+When it returns, `open <reports dir>/<stem>.html`, stamp the run's end, and answer in chat: the verdict, the three fixes, the report as a Markdown link with an absolute `file://` URL, and the subagent's autopilot chat line.
 
-**Done when** the build printed `lint: 0 findings` with `--check-choice` and `--strict`; the `screens_gallery` item count equals the state count of `graph.json` (plus `diff.json.screens.removed` with since); the lede names a verdict and three fixes; at least one walk think-aloud line is quoted; the subagent reports report step 9 passed, including the gallery checks and `scrollWidth <= 1280` at 1280 px; and the chat answer carries the file link.
+```js
+await ax.writeRun(dataDir, { finished: new Date().toISOString() });
+```
+
+**Done when** the build printed `lint: 0 findings` with `--check-choice` and `--strict`; the `screens_gallery` item count equals the state count of `graph.json` (plus `diff.json.screens.removed` with since); the lede names a verdict and three fixes; at least one walk think-aloud line is quoted; the subagent reports report step 9 passed, including the gallery checks and `scrollWidth <= 1280` at 1280 px; `run.json` has `finished`; and the chat answer carries the file link.

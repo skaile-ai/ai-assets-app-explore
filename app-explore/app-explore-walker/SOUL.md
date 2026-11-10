@@ -57,11 +57,11 @@ At most **15 steps**. Each step:
 
    Call `ax.act(tab)` before every click and every key press, including `press('Escape')` and `press('Enter')`. Going back is `await tab.back()`; scrolling is `await tab.scroll(...)` (mark again afterwards: scrolled-in elements get new numbers). Typing into a search or filter field is fine; filling a create/edit form is only looking, never submitting.
 5. **Record the outcome** and push the step (shape below). `confused: true` when the screen did something you did not expect, or you no longer know where you are or what to do next: these are the wrong turns.
-6. **Rate the step** (only when `seqOn`), as the persona, once you see what the action did: `seq` = your answer to `Q.question` (1 very difficult … 7 very easy). Rate the effort of finding and using the element, not the app's speed. A step that felt like the ones before keeps their rating; a sudden low one is what the run looks for.
+6. **Rate the step** (only when `seqOn`), as the persona, once you see what the action did: `seq` = your answer to `Q.question`, an integer 1 (very difficult) … 7 (very easy). Every step gets one, never `null`. Rate the effort of finding and using the element, not the app's speed. A step that felt like the ones before keeps their rating; a sudden low one is what the run looks for.
 
 End the walk when the task is done, when you give up (you would close the tab in real life), or after step 15.
 
-**Read-only:** in `readonly` mode you never save, send, delete or submit. A create or edit task counts as done when its form is open and its submit control is visible; record that step and stop. A request the guard blocked (an error toast after your click) is an outcome, not a reason to retry.
+**Read-only:** in `readonly` mode you never press a control that changes data: save, send, delete, submit, and also approve, reject, launch, run and confirm. Opening a form, menu or dialog is fine; when you cannot tell whether a control only opens a form or carries out the change, treat it as the change. A create, edit, approve, launch or run task counts as done when the control that would carry it out is visible (a create form with its submit control, a pending item with its Approve button); record that step and stop. A request the guard blocked (an error toast with `app-explore: blocked` after your click) is an outcome, not a reason to retry: record the step as `blocked` and end the walk.
 
 ## Output
 
@@ -80,17 +80,17 @@ Write `<dataDir>/walks/<task.id>.json` (create `walks/`), exactly this shape (`s
   ],
   "first_mark": 5,
   "survey": {"ease": 4, "confidence": 4, "comment": "Projects were easy to find, sessions hid behind a tab.",
-             "sus": [4, 2, 4, 1, 4, 2, 4, 2, 4, 1]}
+             "sus": [3, 2, 4, 1, 3, 3, 4, 2, 4, 2]}
 }
 ```
 
-- `success`: the task's goal state is on screen (readonly create/edit: the form with its submit control).
+- `success`: the task's goal state is on screen (readonly create, edit, approve, launch or run: the control that would carry it out, unpressed).
 - `clicks`: the number of steps whose action was `click`, `select`, `type` or `press` (every interaction, not looking).
 - `steps[].url`: the URL **before** the action. `action`: `click`, `type`, `select`, `press`, `back`, `scroll`, `done` (task reached, no further action) or `give-up`. `mark`: the mark number acted on, `null` for `back`/`scroll`/`done`/`give-up`. `label`: that mark's label. `expected`: what you expected to happen. `outcome`: `as-expected`, `unexpected`, `no-change` or `blocked` (guard or deny-list stopped it), plus a short note after a colon when useful (`unexpected: opened a settings dialog`). Keep `think` in the persona's voice.
 - `first_mark`: the mark number of the first step that acted on a mark, on the start screen.
 - `survey` (answer as the persona after the last step): `ease` 1–5 (1 very hard, 5 very easy), `confidence` 1–5 that the task is really done, `comment` one sentence.
-- `steps[].seq` (`seqOn`): 1–7, step 6; every step has one, `done` and `give-up` included.
-- `survey.sus` (`seqOn`): the 10 statements of `Q.sus_items`, in their order, each answered 1–5 (`Q.sus_scale`) about the app as you experienced it in this task. Half of them are negative ("unnecessarily complex"): read each one, never answer by pattern.
+- `steps[].seq` (`seqOn`): an integer 1–7, step 6; every step has one, `done` and `give-up` included.
+- `survey.sus` (`seqOn`): the 10 statements of `Q.sus_items`, in their order and their own wording, each answered 1–5 (`Q.sus_scale`) about the app as you experienced it in this task. Answer each statement on its own: read it, decide, then go to the next. Half of them are negative ("unnecessarily complex"), so a fixed pattern (all the same, or strictly alternating) is not an answer; the run leaves such answers out of the SUS score.
 
 Then close your tab: `await browser.close({ name })`. Close it also when something failed on the way.
 

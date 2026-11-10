@@ -15,9 +15,11 @@ const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export const DENY_ALWAYS = /(log ?out|sign ?out|abmelden)/i;
 // A denied word starts at a word start (so `Absender`, `Display` pass) and, except the stems archiv, veröffentlich,
-// bezahl (German compounds: Archivieren, Veröffentlichen, Bezahlen), ends at a word end (so `Saved items` passes).
-// A lone `Cancel` dismisses a dialog and stays allowed; `Cancel order` is denied.
-export const DENY_READONLY = /(?<![\p{L}\p{N}])(?:(?:delete|remove|send|submit|save|publish|pay|buy|invite|reset|revoke|disconnect|check ?out|löschen|entfernen|senden|absenden|speichern|kaufen|einladen|trennen|stornieren|bestellen)(?![\p{L}\p{N}])|cancel(?=\s+\p{L})|archiv|veröffentlich|bezahl)/iu;
+// bezahl (German compounds: Archivieren, Veröffentlichen, Bezahlen), ends at a word end (so `Saved items`, `Approvals`,
+// `Rejected` pass). A lone `Cancel` dismisses a dialog and stays allowed; `Cancel order` is denied. Approve, reject and
+// confirm write in one click, so they count like save; `Launch`/`Run`/`Starten` often only open a form (the crawl and
+// the walkers need that dialog), so they stay allowed and the write guard stops the write itself.
+export const DENY_READONLY = /(?<![\p{L}\p{N}])(?:(?:delete|remove|send|submit|save|publish|pay|buy|invite|reset|revoke|disconnect|check ?out|approve|reject|confirm|löschen|entfernen|senden|absenden|speichern|kaufen|einladen|trennen|stornieren|bestellen|genehmigen|ablehnen|bestätigen)(?![\p{L}\p{N}])|cancel(?=\s+\p{L})|archiv|veröffentlich|bezahl)/iu;
 
 /** True when a control with this accessible name (or link href) must not be pressed in `mode`. */
 export function denied(label, mode = 'readonly', href = '') {
@@ -164,7 +166,9 @@ async function drainKey(tab, key) {
  * Move the page's guard logs to <data>/blocked.jsonl (rejected writes) and <data>/passive.jsonl (writes the guard let
  * through, `why`: passive|allow|graphql|trpc). Each row's `state` is the id of the state whose page produced it (null
  * when unknown, e.g. in a walk), `task` the walk's task id (null in the crawl), `page` the URL the write was made on.
- * The guard's own test request (guardCheck) lands in blocked.jsonl with `why: "selfcheck"` and is not counted.
+ * A blocked row's `why` says which rule rejected it: `acting` (any write inside the acting window that no read pass
+ * let through, the page's own background writes included) or `method` (PUT/PATCH/DELETE outside it). The guard's own
+ * test request (guardCheck) lands there with `why: "selfcheck"` and is not counted.
  * Returns how many blocked entries were moved.
  */
 export async function drainBlocked(tab, dataDir, { state = null, task = null } = {}) {
@@ -172,7 +176,7 @@ export async function drainBlocked(tab, dataDir, { state = null, task = null } =
   const passed = await drainKey(tab, PASS_KEY);
   const row = (r, extra) => JSON.stringify({ method: r.method, url: r.url, ...extra, state, task, page: r.page, ts: r.ts }) + '\n';
   const self = (r) => String(r.url).includes(SELFCHECK);
-  await appendFile(join(dataDir, 'blocked.jsonl'), blocked.map((r) => row(r, { acting: r.acting, ...(self(r) ? { why: 'selfcheck' } : {}) })).join(''));
+  await appendFile(join(dataDir, 'blocked.jsonl'), blocked.map((r) => row(r, { acting: r.acting, why: self(r) ? 'selfcheck' : r.acting ? 'acting' : 'method' })).join(''));
   await appendFile(join(dataDir, 'passive.jsonl'), passed.map((r) => row(r, { why: r.why })).join(''));
   return blocked.filter((r) => !self(r)).length;
 }

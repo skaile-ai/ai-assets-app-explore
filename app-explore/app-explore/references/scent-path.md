@@ -4,7 +4,7 @@ Read this only when `run.json.features.scent_path` is true. It adds `pathScent` 
 
 ## Step 6: `pathScent`
 
-`pathScent` repeats the scent check on every state of each task's shortest path, the entry included, the way a user scans. The state's marks are taken in reading order (rows top to bottom, left to right), at most `scent.max_marks`, and cut into groups of `scent.chunk_size` (rubric.json). The judge sees one group at a time with the persona, the task, the step and the clicks so far, and picks one of the group's marks or `next`; `next` shows the following group in the next round. Every call is a judge call of kind `path_scent`.
+`pathScent` repeats the scent check on every state of each task's shortest path, the entry included, the way a user scans. Each state offers the same marks the entry check offers (the first `scent.max_marks` by mark number), presented in reading order (rows top to bottom, left to right) and cut into groups of `scent.chunk_size` (rubric.json). The judge sees one group at a time with the persona, the task, the step and the clicks so far, and picks one of the group's marks or `next`; `next` shows the following group in the next round. Every call is a judge call of kind `path_scent`.
 
 It adds `steps[]` to each task in `scent.json`, one per path state:
 
@@ -14,7 +14,7 @@ It adds `steps[]` to each task in `scent.json`, one per path state:
 
 `sp.judge_error` set: the judge died; the unanswered steps carry `error: "judge unavailable"`; rerun `pathScent` once the judge is back.
 
-**Done when** each `scent.json` entry has `steps[]` with one entry per path state, and `run.json.models` has `calls` for `path_scent` when a task has a path.
+**Done when** each `scent.json` entry has `steps[]` with one entry per path state (`steps: []` for a task whose `target_state` is the entry itself, `null` or unreachable: it has no path to check), and `run.json.models` has `calls` for `path_scent` when a task has a path.
 
 ## Step 7
 
