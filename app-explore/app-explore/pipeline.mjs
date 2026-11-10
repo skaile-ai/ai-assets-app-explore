@@ -670,10 +670,11 @@ export async function pathScent({ judgeBatch }, { dataDir, concurrency = 16 }) {
 export const readExamples = async () => JSON.parse(await readFile(new URL('./examples/critiques.json', import.meta.url), 'utf8'));
 
 /**
- * `n` examples for one screen type: same-type examples first, then the rest; within each group the pick prefers a
- * rule not yet shown, then a source (uicrit / app-explore) not yet shown, then bank order. `type` null: no type match.
+ * `n` examples (rubric.json `examples.per_screen`) for one screen type: same-type examples first, then the rest;
+ * within each group the pick prefers a rule not yet shown, then a source (uicrit / app-explore) not yet shown, then
+ * bank order. `type` null: no type match.
  */
-export function pickExamples(bank, type, n = 4) {
+export function pickExamples(bank, type, n) {
   const left = [...bank], out = [];
   const src = (e) => String(e.source).split(':')[0];
   while (out.length < n && left.length) {
@@ -688,7 +689,7 @@ export function pickExamples(bank, type, n = 4) {
 
 /**
  * The step 8 prompt for one `app-explore-critic` call. `examples` off: exactly the 0.1.0 brief (dataDir, states,
- * batch). On: plus `examples` (the picked bank entries) and `example_ids` = per state the four ids matched to its
+ * batch). On: plus `examples` (the picked bank entries) and `example_ids` = per state the ids matched to its
  * screen type, the judge's `screen_type` answer under the choice gate (unsure: no type, rule mix only).
  */
 export async function criticBrief({ dataDir, states, batch }) {
@@ -704,7 +705,7 @@ export async function criticBrief({ dataDir, states, batch }) {
   };
   const ids = {}, used = new Map();
   for (const sid of states) {
-    const pick = pickExamples(bank.examples, typeOf(sid));
+    const pick = pickExamples(bank.examples, typeOf(sid), rubric.examples.per_screen);
     ids[sid] = pick.map((e) => e.id);
     for (const e of pick) used.set(e.id, e);
   }

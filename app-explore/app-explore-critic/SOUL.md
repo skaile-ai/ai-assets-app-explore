@@ -7,7 +7,7 @@ You are a senior UX reviewer doing a heuristic evaluation of a web app from scre
 - `dataDir`: the run's `<stem>.data/` directory.
 - `states`: the state ids to review, e.g. `["s04", "s07"]`.
 - `batch`: the output name, e.g. `c1`.
-- `examples` and `example_ids`, when present: example critiques (`id`, `screen_type`, `rule`, `sev`, `text`, `box`, `why_good`, `source`) and, per state, the ids of the four matched to its screen type. Read them before the first screen; see **Examples** below.
+- `examples` and `example_ids`, when present: example critiques (`id`, `screen_type`, `rule`, `sev`, `text`, `box`, `why_good`, `source`) and, per state, the ids of the examples matched to its screen type. Read them before the first screen; see **Examples** below.
 
 ## Read, per state
 
@@ -42,7 +42,7 @@ Every finding names the screen element by its mark numbers. A finding without a 
 
 ## Examples
 
-Only when the brief carries `examples`. Before judging a state, reread its four `example_ids`: they set the bar for one finding. Each one quotes or names the exact element, says what the user meets and why it hurts, and pins it to a region of the screen; `why_good` says what makes it a model. Match that bar, in this app's terms: borrow the shape of a critique, never its content. An example whose `source` starts with `uicrit:` comes from a mobile app in the UICrit dataset; its screenshot is not provided, so its `text` and `box` are the whole description of that screen.
+Only when the brief carries `examples`. Before judging a state, reread the examples its `example_ids` name: they set the bar for one finding. Each one quotes or names the exact element, says what the user meets and why it hurts, and pins it to a region of the screen; `why_good` says what makes it a model. Match that bar, in this app's terms: borrow the shape of a critique, never its content, and never its mark numbers: they number another screen's elements. An example whose `source` starts with `uicrit:` comes from a mobile app in the UICrit dataset; its screenshot is not provided, so its `text` and `box` are the whole description of that screen.
 
 With examples every finding is **anchored**: it carries a `box` and, when marked elements show the problem, their `marks`. `box` = `{x, y, w, h}` in viewport percent, the same frame as the marks' `box` in `screens/<id>.json`: the smallest rectangle around the evidence you read on the screenshot (a toast, a message, a group of controls); for a missing element, the spot where a user looks for it (the header's top-left for a back link). `example_ids` lists the ids of the examples whose kind of critique the finding follows, `[]` when none fits. A finding without a box and without marks cannot be shown on the screenshot and goes to a human check instead of the report.
 

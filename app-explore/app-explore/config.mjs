@@ -106,6 +106,8 @@ export function meter(dataDir, rubric) {
         return items;
       } finally { add(kind, role, calls, (Date.now() - t) / 1000, cost); }
     },
+    /** Count calls made outside this kernel (agents) under call kind `kind`; flushed like the others. */
+    record(kind, calls, secs) { add(kind, roleOf(kind), calls, secs); },
     /** Add this meter's counts into run.json `models` and reset them. */
     async flush() {
       const done = Object.entries(acc);
@@ -124,4 +126,15 @@ export function meter(dataDir, rubric) {
       });
     },
   };
+}
+
+/**
+ * Count agent runs into run.json `models[kind]` like `meter` counts kernel calls: `kind` is a key of rubric.json
+ * `models` (`walker_agent`, `critic`), `calls` the agents run, `secs` their wall time. SKILL.md step 8 calls it after
+ * each wave of agents, so the per-kind comparison includes them.
+ */
+export async function recordAgent(dataDir, kind, { calls = 1, secs = 0 } = {}) {
+  const mt = meter(dataDir, await readRubric());
+  mt.record(kind, calls, secs);
+  await mt.flush();
 }

@@ -81,7 +81,6 @@
       "sev": 2,
       "text": "The sidebar section is called \"Test's workspace\" (mark 4) but its add button is labelled 'New My space project' (mark 5), so one space carries two names. Users cannot tell whether 'My space' and the workspace are the same place a new project lands in.",
       "box": {"x": 0.6, "y": 15.0, "w": 15.7, "h": 3.5},
-      "marks": [4, 5],
       "why_good": "An OOUX consistency finding: both names quoted, both marks given, and the question the user is left with.",
       "source": "app-explore:app-explore-localhost-2026-11-10-v3/C-4@e1ea0257"
     },
@@ -102,7 +101,6 @@
       "sev": 2,
       "text": "The Up/Left/Down/Right buttons (marks 1-4) are invisible: their hit areas sit over the 'Top 10 in your organization' and 'Loading high scores…' text. A mouse or touch user cannot see the controls the dialog depends on, and clicking the leaderboard text moves the snake.",
       "box": {"x": 45.3, "y": 71.0, "w": 9.4, "h": 9.8},
-      "marks": [1, 2, 3, 4],
       "why_good": "Uses the Set-of-Mark overlay as evidence: marks where nothing is drawn reveal controls a user cannot see.",
       "source": "app-explore:app-explore-localhost-2026-11-10-v3/C-6@054b780e"
     },
@@ -113,7 +111,6 @@
       "sev": 2,
       "text": "The user menu's 'Expert mode' and 'Playful mode' toggles (marks 8-11) change app behaviour with a single click and give no hint of what each mode changes. A first-time user either avoids them or flips them blindly.",
       "box": {"x": 17.3, "y": 66.0, "w": 19.2, "h": 8.0},
-      "marks": [8, 9, 10, 11],
       "why_good": "Names the controls, what is missing (a hint) and both ways a newcomer reacts.",
       "source": "app-explore:app-explore-localhost-2026-11-10-v3/C-10@8b0e33f3"
     },
@@ -124,7 +121,6 @@
       "sev": 2,
       "text": "The organization '…' menu mixes an action (New project, mark 2), whole-app navigation (Flows, Run groups, Sessions, Store, Schedules, marks 3-7) and settings in one list. Main sections hidden behind a three-dot overflow on the org name are hard to discover.",
       "box": {"x": 1.5, "y": 17.8, "w": 14.3, "h": 23.2},
-      "marks": [2, 3, 4, 5, 6, 7],
       "why_good": "Groups the items by what they are and shows the mix is the problem, with every mark accounted for.",
       "source": "app-explore:app-explore-localhost-2026-11-10-v3/C-8@196350d5"
     }

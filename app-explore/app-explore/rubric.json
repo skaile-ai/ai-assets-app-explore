@@ -15,6 +15,7 @@
     "scent": "judge",
     "walk_step": "smol",
     "walk_survey": "smol",
+    "walker_agent": "task_standard",
     "critic": "slow",
     "mental_predict": "smol",
     "mental_match": "judge",
@@ -113,8 +114,8 @@
     "max_pairs": 40
   },
   "mental": {
-    "max_edges": 40,
-    "max_walk_steps": 60,
+    "max_edges": 400,
+    "max_walk_steps": 400,
     "prompt_concepts": 40,
     "match": {
       "type": "bool",
@@ -189,11 +190,11 @@
       "label": { "en": "Task walk failed", "de": "Aufgabe nicht geschafft" },
       "text": "The persona could not finish the task.",
       "rate_text": "Half or more of the personas could not finish the task." },
-    { "id": "W-struggle", "source": "walk", "success": true, "min_wrong_turns": 2, "max_ease": 2, "min_share": 0.3, "sev": 3,
+    { "id": "W-struggle", "source": "walk", "success": true, "min_wrong_turns": 2, "max_ease": 2, "min_share": 0.5, "sev": 3,
       "label": { "en": "Task walk with detours", "de": "Aufgabe mit Umwegen" },
       "text": "The persona finished the task but struggled.",
-      "rate_text": "Some personas failed the task or finished it only with detours." },
-    { "id": "W-friction", "source": "seq", "max_seq": 3, "min_drop": 3, "sev": 2,
+      "rate_text": "At least half of the personas failed the task or finished it only with detours." },
+    { "id": "W-friction", "source": "seq", "max_seq": 3, "min_drop": 3, "chart_yellow_below": 5, "sev": 2,
       "label": { "en": "Hard step in a task walk", "de": "Schwerer Schritt in einer Aufgabe" },
       "text": "The persona rated this step hard (SEQ 1-7) or much harder than the step before." },
     { "id": "S-scent", "source": "scent", "correct": false, "sev": 2,
@@ -218,6 +219,7 @@
   },
   "bands": { "good": 75, "fair": 50 },
   "since": { "hash_bits": 10, "clarity_delta": 10, "jaccard": 0.8 },
+  "examples": { "per_screen": 4 },
   "seq": {
     "question": "Overall, how difficult or easy was this step? 1 = very difficult, 7 = very easy.",
     "sus_scale": "1 = strongly disagree, 5 = strongly agree",

@@ -81,7 +81,7 @@ T = {
         "seq_label": "Step difficulty per task (SEQ, 1 very difficult to 7 very easy)",
         "seq_summary": "[[t-{id}]]: SEQ per step; SUS {sus}.", "seq_step": "{i}. {what}",
         "rd_cols": ["Run detail", "Value"], "rd_examples": "Critic examples",
-        "rd_examples_text": "Four example critiques per screen, matched to its screen type, from a bank of {u} adapted "
+        "rd_examples_text": "{n} example critiques per screen, matched to its screen type, from a bank of {u} adapted "
                             "from UICrit (Duan, Cheng, Li, Hartmann, Li: UICrit, UIST '24; "
                             "github.com/google-research-datasets/uicrit; CC BY 4.0) and {a} from earlier app-explore runs.",
         "sal_label": "Where the first look lands (predicted attention; outlined: the primary action)",
@@ -140,7 +140,7 @@ T = {
         "seq_label": "Schwierigkeit je Schritt und Aufgabe (SEQ, 1 sehr schwer bis 7 sehr leicht)",
         "seq_summary": "[[t-{id}]]: SEQ je Schritt; SUS {sus}.", "seq_step": "{i}. {what}",
         "rd_cols": ["Laufdetail", "Wert"], "rd_examples": "Beispiele für die Expertenkritik",
-        "rd_examples_text": "Vier Beispielkritiken je Screen, passend zur Screen-Art, aus einer Sammlung von {u} aus "
+        "rd_examples_text": "{n} Beispielkritiken je Screen, passend zur Screen-Art, aus einer Sammlung von {u} aus "
                             "UICrit übernommenen und angepassten (Duan, Cheng, Li, Hartmann, Li: UICrit, UIST '24; "
                             "github.com/google-research-datasets/uicrit; CC BY 4.0) und {a} aus früheren app-explore-Läufen.",
         "sal_label": "Wohin der erste Blick fällt (vorhergesagte Aufmerksamkeit; umrandet: die Hauptaktion)",
@@ -216,6 +216,7 @@ class Compose:
         self.fanout = int(self.features.get("personas") or 1) > 1
         self.saliency_error = run.get("saliency_error") if self.features.get("saliency") else None
         self.friction = next((r for r in rubric["rules"] if r["id"] == "W-friction"), None)
+        self.examples_n = rubric["examples"]["per_screen"]
         self.rule_labels = {r["id"]: r["label"][self.lang] for r in rubric["rules"] if "label" in r}
         b = {"good": self.bands["good"], "fair": self.bands["fair"], "fair_max": self.bands["good"] - 1}
         self.t = {**self.t, "clarity_names": {k: v.format(**b) for k, v in self.t["clarity_names"].items()}}
@@ -494,22 +495,22 @@ class Compose:
         return [self.t["sus_was"].format(now=now, prev=self.num(prev)) if prev is not None else now]
 
     def seq_tabs(self):
-        """One tab per walked task: a bars chart of its steps' SEQ, low ones red (W-friction thresholds)."""
+        """One tab per walked task: a bars chart of its steps' SEQ, coloured by the W-friction rule (red at or below
+        `max_seq`, yellow below `chart_yellow_below`); step labels come from the walk the SEQ values come from."""
         if not self.features.get("seq"):
             return None
-        lo = (self.friction or {}).get("max_seq", 3)
+        lo, mid = self.friction["max_seq"], self.friction["chart_yellow_below"]
         tabs = []
         for k in self.tasks:
             seq = k.get("seq") or []
             if not any(v is not None for v in seq):
                 continue
-            steps = (load(self.data / "walks", f"{k['id']}.json", {}) or {}).get("steps") or []
+            labels = k.get("seq_labels") or []
             items = []
             for i, v in enumerate(seq, 1):
-                s = steps[i - 1] if i <= len(steps) else {}
-                what = safe(s.get("label") or s.get("action") or "")[:40]
+                what = safe(labels[i - 1] if i <= len(labels) else "")[:40]
                 items.append([self.t["seq_step"].format(i=i, what=what), v if v is not None else 0,
-                              "gray" if v is None else "red" if v <= lo else "yellow" if v < 5 else "green"])
+                              "gray" if v is None else "red" if v <= lo else "yellow" if v < mid else "green"])
             sus = "—" if k.get("sus") is None else self.num(k["sus"])
             tabs.append({"label": safe(k.get("title") or k["id"])[:40],
                          "summary": self.t["seq_summary"].format(id=k["id"], sus=sus),
@@ -847,7 +848,7 @@ class Compose:
         if self.features.get("examples") and any(load(p.parent, p.name, []) for p in (self.data / "critique").glob("*.json")):
             bank = json.loads((RUBRIC.parent / "examples" / "critiques.json").read_text())["examples"]
             u = sum(str(e.get("source", "")).startswith("uicrit:") for e in bank)
-            rows.append([self.t["rd_examples"], self.t["rd_examples_text"].format(u=u, a=len(bank) - u)])
+            rows.append([self.t["rd_examples"], self.t["rd_examples_text"].format(n=self.examples_n, u=u, a=len(bank) - u)])
         if self.saliency_error:
             rows.append([self.t["rd_saliency"], self.t["rd_saliency_error"].format(e=safe(self.saliency_error))])
         elif self.features.get("saliency") and load(self.data, "saliency.json", {}):

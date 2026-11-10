@@ -67,8 +67,11 @@ function conceptStore(concepts, screenName) {
     return top.length ? top.map((c) => `- ${c.name} (${c.kind}${c.believed_attributes.length ? `: ${c.believed_attributes.slice(0, 6).join(', ')}` : ''})`
       + ` seen on ${c.seen_in.slice(0, 3).map((s) => `"${screenName[s] ?? s}"`).join(', ')}`).join('\n') : '(nothing yet)';
   };
-  /** Apply concept ops, each at `stateOf(op)`; returns counts. A known name counts as confirm unless contradicted. */
-  const apply = (ops, stateOf, step) => {
+  /**
+   * Apply concept ops, each at `stateOf(op)`; returns counts. A known name counts as confirm unless contradicted.
+   * A new concept records `found_via` = `viaOf(op)`, the label of the click that first showed it (null: the entry).
+   */
+  const apply = (ops, stateOf, step, viaOf = () => null) => {
     const n = { added: 0, confirmed: 0, contradicted: 0 };
     for (const o of ops ?? []) {
       const name = String(o.name ?? '').trim();
@@ -77,7 +80,7 @@ function conceptStore(concepts, screenName) {
       let c = concepts.find((x) => sameWord(x.name, name));
       if (!c) {
         c = { id: `c${concepts.length + 1}`, name, kind: o.kind, believed_attributes: [], seen_in: [],
-          first_seen: { step, state: sid }, confidence: 0, confirmations: 0, contradictions: 0 };
+          first_seen: { step, state: sid }, found_via: viaOf(o) ?? null, confidence: 0, confirmations: 0, contradictions: 0 };
         concepts.push(c);
         n.added++;
       } else if (o.op === 'contradict') { c.contradictions++; n.contradicted++; } else { c.confirmations++; n.confirmed++; }
@@ -167,6 +170,7 @@ async function mentalCrawl({ judgeBatch, completion }, { dataDir, maxEdges }) {
     .sort((a, b) => rank[a.from] - rank[b.from] || a.i - b.i);
   const cap = maxEdges ?? cfg.max_edges;
   const edges = all.slice(0, cap);
+  const labelOf = (e) => e.label ?? (screens[e.from]?.marks ?? []).find((m) => m.n === e.mark)?.label ?? null;
   const store = conceptStore([], screenName);
   const timeline = [], violations = [], errors = [];
   const mt = meter(dataDir, rubric);
@@ -228,12 +232,12 @@ async function mentalCrawl({ judgeBatch, completion }, { dataDir, maxEdges }) {
       pushContradictions(violations, up.value?.contradictions, at, () => matches === false);
       renumber(violations);
       timeline.push({ step, source: 'crawl', state: e.to, from: e.from, label: e.label ?? null, predicted, matches,
-        p: p == null ? null : Math.round(p * 100) / 100, ...store.apply(up.value?.concepts, () => e.to, step),
+        p: p == null ? null : Math.round(p * 100) / 100, ...store.apply(up.value?.concepts, () => e.to, step, () => labelOf(e)),
         violations: violations.slice(before).map((v) => v.id) });
     }
   } finally { await mt.flush(); }
   const out = {
-    cap: { edges: cap, total_edges: all.length, replayed: edges.length },
+    cap: { edges: cap, total_edges: all.length, replayed: edges.length, truncated: all.length > edges.length },
     concepts: store.concepts, timeline, violations,
     after_crawl: { concepts: structuredClone(store.concepts), steps: timeline.length },
     ...(errors.length ? { errors } : {}),
@@ -285,15 +289,15 @@ async function mentalWalks({ judgeBatch, completion }, { dataDir }) {
   let files = [];
   try { files = (await readdir(join(dataDir, 'walks'))).filter((n) => n.endsWith('.json')).sort(); } catch {}
   const walks = [];
-  let budget = cfg.max_walk_steps;
+  let budget = cfg.max_walk_steps, truncated = false;
   for (const f of files) {
-    if (budget <= 0) break;
     const w = await readJson(join(dataDir, 'walks', f));
     if (w.variant) continue; // persona variants (walks/<task>-<variant>.json): the model stays one person's
     const raw = w.steps ?? [];
     const steps = [];
     raw.forEach((st, i) => {
-      if (['done', 'give-up'].includes(st.action) || !st.expected || budget <= 0) return;
+      if (['done', 'give-up'].includes(st.action) || !st.expected) return;
+      if (budget <= 0) { truncated = true; return; }
       budget--;
       // url: where the step led (the next step's page), for violations off the crawled graph
       steps.push({ i, st, ...resultState(st, raw[i + 1]), url: raw[i + 1]?.url ?? st.url, match: outcomeMatch(st.outcome), p: null });
@@ -304,15 +308,19 @@ async function mentalWalks({ judgeBatch, completion }, { dataDir }) {
   const errors = [];
   let judgeError = null;
   try {
-    const free = walks.flatMap((w) => w.steps.filter((s) => s.match === null).map((s) => [`${w.id}#${s.i}`, s]));
+    const free = walks.flatMap((w) => w.steps.filter((s) => s.match === null).map((s) => [`${w.id}#${s.i}`, s, w.id]));
     if (free.length) {
       try {
         const states = Object.fromEntries(free.map(([k, s]) => [k, { step: `${s.st.action} "${s.st.label ?? ''}"`, expected: s.st.expected, outcome: s.st.outcome }]));
         const items = await mt.judge(judgeBatch, 'mental_match', states, { matches: cfg.walk_match }, { intent: 'app-explore mental model, walk outcomes' });
-        for (const [k, s] of free) {
+        for (const [k, s, walk] of free) {
           if (items[k]?.ok) { s.p = items[k].answers.matches.bool; s.match = gatedBool(s.p, rubric.gate); }
+          else errors.push({ walk, step: s.i, kind: 'mental_match', error: String(items[k]?.error ?? 'not judged') });
         }
-      } catch (err) { judgeError = String(err?.message || err); }
+      } catch (err) {
+        judgeError = String(err?.message || err);
+        errors.push({ walk: '*', kind: 'mental_match', error: judgeError, steps: free.length });
+      }
     }
     for (const w of walks) {
       const stepNo = timeline.length;
@@ -347,12 +355,12 @@ async function mentalWalks({ judgeBatch, completion }, { dataDir }) {
       timeline.push({ step: stepNo, source: 'walk', walk: w.id, task: w.task, state: last.to, from: null, label: null,
         steps: w.steps.length, matched: w.steps.filter((s) => s.match === true).length,
         mismatched: w.steps.filter((s) => s.match === false).length,
-        ...store.apply(up.value?.concepts, (o) => byStep[o.step]?.to ?? last.to, stepNo),
+        ...store.apply(up.value?.concepts, (o) => byStep[o.step]?.to ?? last.to, stepNo, (o) => byStep[o.step]?.st.label ?? null),
         violations: violations.slice(before).map((v) => v.id) });
     }
   } finally { await mt.flush(); }
   const out = { ...mm, concepts: store.concepts, timeline, violations,
-    walks: { fed: walks.length, steps: walks.reduce((n, w) => n + w.steps.length, 0), cap: cfg.max_walk_steps } };
+    walks: { fed: walks.length, steps: walks.reduce((n, w) => n + w.steps.length, 0), cap: cfg.max_walk_steps, truncated } };
   const errs = [...(mm.errors ?? []).filter((x) => !x.walk), ...errors];
   if (errs.length) out.errors = errs; else delete out.errors;
   await writeJson(join(dataDir, 'mentalmodel.json'), out);

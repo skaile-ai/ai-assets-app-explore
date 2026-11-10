@@ -4,9 +4,9 @@
 //   const { tab } = await ax.openGuarded(browser, { url, dataDir, mode, name });      // any other tab (walks): same guard, no login handling
 // Every function takes the tab (or the eval `browser`) as an argument: module code cannot see eval prelude globals.
 import { access, appendFile, copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
-import { basename, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -402,21 +402,25 @@ async function langOf(tab) {
   return l.startsWith('de') ? 'de' : 'en';
 }
 
-const runWrites = new Map(); // run.json path → tail of its write chain: merges in this process never interleave
+const runWrites = new Map(); // absolute run.json path → tail of its write chain: merges in this process never interleave
 
 /**
  * Merge `patch` into <data>/run.json (shallow). `patch` may be a function `(run) => patch` for a merge that reads the
  * current value (e.g. summing run.json `models`). Writes to one run.json are serialized; returns the merged run.
+ * A missing run.json starts empty; one that does not parse throws (never overwritten with the patch alone).
  */
 export async function writeRun(dataDir, patch) {
-  const p = join(dataDir, 'run.json');
+  const p = resolve(dataDir, 'run.json');
   const next = (runWrites.get(p) ?? Promise.resolve()).catch(() => {}).then(async () => {
     let run = {};
-    try { run = JSON.parse(await readFile(p, 'utf8')); } catch {}
+    try { run = JSON.parse(await readFile(p, 'utf8')); } catch (err) {
+      if (err?.code !== 'ENOENT') throw new Error(`app-explore: ${p} unreadable, not overwritten: ${err?.message || err}`);
+    }
     Object.assign(run, typeof patch === 'function' ? patch(run) : patch);
-    await mkdir(dataDir, { recursive: true });
-    await writeFile(`${p}.tmp`, JSON.stringify(run, null, 2));
-    await rename(`${p}.tmp`, p);
+    await mkdir(dirname(p), { recursive: true });
+    const tmp = `${p}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    await writeFile(tmp, JSON.stringify(run, null, 2));
+    await rename(tmp, p);
     return run;
   });
   runWrites.set(p, next);

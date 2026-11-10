@@ -112,8 +112,8 @@ export async function walkInKernel({ ax, browser, completion, persona, variant =
     await writeFile(walkFile(dataDir, task, variant), JSON.stringify(walk, null, 2));
     return walk;
   } finally {
-    await browser.close({ name });
     await mt.flush();
+    try { await browser.close({ name }); } catch {}
   }
 }
 

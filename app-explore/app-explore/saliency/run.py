@@ -7,11 +7,12 @@
 Per state of graph.json (screenshot <stem>.media/<id>.png, marks from screens/<id>.json):
 - <stem>.media/<id>.sal.png: the heatmap over the screenshot, the primary action's box outlined; same size as the
   screenshot, so mark boxes and gallery notes line up.
-- <stem>.data/saliency.json {<state>: {primary_mark, primary_source, primary_share, primary_rank, marks, top_marks:
-  [{mark, share}], rendered_ms}}. `share` of a mark = the saliency mass inside its box divided by the box's share of
-  the page area: 1 = page average, 3 = three times as much attention per pixel as the page average. `primary_rank`
-  1-based among the `marks` marks by share. The primary mark is the action perceive.json `extract` flags `primary`
-  (primary_source "extract"), else its first action with a mark ("first-action"), else null.
+- <stem>.data/saliency.json {<state>: {primary_mark, primary_source, primary_share, primary_rank, marks, shares:
+  {<mark>: share}, top_marks: [{mark, share}], rendered_ms}}. `share` of a mark = the saliency mass inside its box
+  divided by the box's share of the page area: 1 = page average, 3 = three times as much attention per pixel as the
+  page average. `shares` holds every ranked mark, highest first; `marks` is their count, `top_marks` the first 5.
+  `primary_rank` 1-based among the `marks` marks by share. The primary mark is the action perceive.json `extract`
+  flags `primary` (primary_source "extract"), else its first action with a mark ("first-action"), else null.
 On a failure (and with --error) run.json gets `saliency_error` and saliency.json is removed (no R-salience from a
 stale run); a success clears `saliency_error`.
 With the feature off (run.json features over rubric.json defaults) the script writes nothing and exits 0.
@@ -39,15 +40,21 @@ def load(path, default=None):
 
 
 def patch_run(data, **kv):
-    """Shallow-merge kv into run.json; a None value removes the key."""
+    """Shallow-merge kv into run.json (tmp file + rename); a None value removes the key. A missing run.json starts
+    empty; one that does not parse raises (never overwritten with kv alone)."""
     p = data / "run.json"
-    run = load(p, {})
+    try:
+        run = json.loads(p.read_text())
+    except FileNotFoundError:
+        run = {}
     for k, v in kv.items():
         if v is None:
             run.pop(k, None)
         else:
             run[k] = v
-    p.write_text(json.dumps(run, indent=2, ensure_ascii=False))
+    tmp = p.with_name(f"run.json.{os.getpid()}.{os.urandom(4).hex()}.tmp")
+    tmp.write_text(json.dumps(run, indent=2, ensure_ascii=False))
+    os.replace(tmp, p)
 
 
 def feature_on(data):
@@ -127,7 +134,8 @@ def run(data, media):
         out[sid] = {
             "primary_mark": pm, "primary_source": src,
             "primary_share": shares.get(pm), "primary_rank": ranked.index(pm) + 1 if pm is not None else None,
-            "marks": len(ranked), "top_marks": [{"mark": n, "share": shares[n]} for n in ranked[:TOP]],
+            "marks": len(ranked), "shares": {n: shares[n] for n in ranked},
+            "top_marks": [{"mark": n, "share": shares[n]} for n in ranked[:TOP]],
             "rendered_ms": ms,
         }
     (data / "saliency.json").write_text(json.dumps(out, indent=2))

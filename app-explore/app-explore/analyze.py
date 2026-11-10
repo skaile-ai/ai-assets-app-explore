@@ -598,11 +598,12 @@ class Run:
         for t in mm.get("timeline", []):
             if t.get("source") == "crawl" and t.get("step") and t.get("matches") is None and t.get("p") is not None:
                 pred = t.get("predicted") or {}
+                leaning = gated({"bool": t["p"]}, "bool", self.gate)[2]
                 self.needs.append({"state": t["state"], "source": "mental", "question": "matches", "answer": {"bool": t["p"]},
-                                   "leaning": t["p"] >= 0.5, "rules": [rules[next(iter(rules))]["id"]],
+                                   "leaning": leaning, "rules": [rules[next(iter(rules))]["id"]],
                                    "text": f"Clicking \"{t.get('label')}\" on \"{heading(t.get('from'))}\": does it show what a "
                                            f"first-time user predicted ({pred.get('kind')} \"{pred.get('heading')}\")? "
-                                           f"Leaning: {t['p'] >= 0.5} (p {t['p']}), outside the confidence gate."})
+                                           f"Leaning: {leaning} (p {t['p']}), outside the confidence gate."})
         for v in mm.get("violations", []):
             rule = rules.get(v.get("kind"))
             if not rule or (v["kind"] == "naming" and self.mental_naming_known(v)):
@@ -890,11 +891,13 @@ class Run:
                     before = v
 
     def seq_cols(self, walk):
-        """tasks.json columns of feature `seq`: SEQ per step and the walk's SUS; none when the feature is off."""
+        """tasks.json columns of feature `seq`: SEQ per step, each step's label (else action) from the same walk, and
+        the walk's SUS; none when the feature is off."""
         if not self.features.get("seq"):
             return {}
         steps = (walk or {}).get("steps") or []
         return {"seq": [seq_of(s) for s in steps] if walk else None,
+                "seq_labels": [s.get("label") or s.get("action") or "" for s in steps] if walk else None,
                 "sus": sus_score(((walk or {}).get("survey") or {}).get("sus"))}
 
     def sus_scores(self, tasks):

@@ -7,9 +7,19 @@ eye-tracking data of UI screenshots, file `umsi++.hdf5` in https://userinterface
 The original code needs Python 3.6 / Keras 2.2.4 / TF 1.14; this file rebuilds the network by layer name and loads the
 weights with load_weights(by_name=True).
 
-Weights are downloaded by the user (setup.sh), never redistributed with the skill. The UEyes dataset is CC BY 4.0;
-the weights page states no terms. Only UMSI++ is used here; the original UMSI weights (non-commercial licence) are not
-downloaded, the "umsi" variant below exists only because both share this builder.
+Licences, as checked on 2026-11-10:
+- UMSI code (github.com/diviz-mit/predimportance-public, LICENSE): copyright 2020 Fosco, Casser, Bedi, O'Donovan,
+  Hertzmann, Bylinskii, MIT and Adobe; "for non-commercial research purposes only", BSD-style redistribution terms;
+  commercial licensing via hertzman@adobe.com.
+- UEyes code (github.com/YueJiang-nj/UEyes-CHI2023, whose saliency_models/UMSI++ holds the UMSI++ model definition):
+  licence not stated (no LICENSE file, none in the READMEs).
+- UEyes dataset: CC BY 4.0. The weights page states no terms.
+This file copies no source text from either repository: it is written anew in tf_keras. It does reproduce the layer
+graph of the UEyes UMSI++ model definition (layer types, sizes, order and names, which load_weights(by_name=True)
+needs), so it is a derivative of that architecture; the Xception part follows keras.applications (MIT).
+Weights are downloaded by the user (setup.sh, sha256-checked), never redistributed with the skill. Only UMSI++ is
+used here; the original UMSI weights (non-commercial licence) are not downloaded, the "umsi" variant below exists
+only because both share this builder.
 """
 import os
 os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
