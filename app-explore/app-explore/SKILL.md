@@ -6,12 +6,12 @@ description: Explore a running web app like a user and report its perceived
   or re-running against a previous app-explore report.
 license: MIT
 metadata:
-  version: 0.2.0
+  version: 0.3.0
   publisher: skaile-ai
   requires: "report"
 ---
 
-# app-explore <url> [sandbox] [since <path>|since auto] [budget <n>] [with <f,…>] [without <f,…>] [personas <n>]
+# app-explore <url> [sandbox] [since <path>|since auto] [seed <path>] [budget <n>] [with <f,…>] [without <f,…>] [personas <n>]
 
 You explore a running web app the way a first-time user would, without its source code: a hidden browser crawls every reachable **state** (a page, or a dialog, menu or tab panel opened by a click), each state gets a screenshot plus a Set-of-Mark screenshot where every interactive element carries a numbered **mark**, and the run ends in a static HTML report built with the `report` skill.
 Needs `@skaile-ai/report` ≥ 0.6.0 (gallery block, `app-audit` profile) and, for the walk and critique steps, the agents `app-explore-walker` and `app-explore-critic`.
@@ -31,13 +31,14 @@ The app's data is someone's real data. The run is **readonly** by default: a wri
 
 ## 1. Arguments and stem
 
-Parse `app-explore <url> [sandbox] [since <path>|since auto] [budget <n>] [with <f,…>] [without <f,…>] [personas <n>]`:
+Parse `app-explore <url> [sandbox] [since <path>|since auto] [seed <path>] [budget <n>] [with <f,…>] [without <f,…>] [personas <n>]`:
 
 - `mode`: `sandbox` when the word is present, else `readonly`.
 - Reports dir: `<repo>/.scratch/reports/` with repo = `git rev-parse --show-toplevel` of the cwd, else `~/.scratch/reports/`.
 - **Stem**: `app-explore-<host>-<YYYY-MM-DD>`, with `-v2`, `-v3` … appended when that stem's `.json` or `.data/` already exists. `<host>` is the URL hostname without `www.` (`localhost` stays `localhost`).
 - `since auto`: among stems `app-explore-<host>-<date>[-vN]` in the reports dir other than this run's that have both a `<stem>.json` report file (not `<stem>.choice.json`) and a `<stem>.data/` dir, the one whose `<stem>.json` was modified last; `since <path>`: that file.
   Its `<prev stem>.data/` and `<prev stem>.media/` must exist, else stop with `since: <path> has no .data/ dir`. `since` (for `run.json` and every later step) = the absolute path of that `<prev stem>.data/` dir. No `since`: `since = null`.
+- `seed <path>`: an app-model/1 file (`app-model.docs.yaml` or `app-model.code.yaml`, written by the `app-model` skill) whose objects and tasks step 6 starts from. The file must exist, else stop with `seed: <path> not found`; `seed` together with `since` stops with `seed and since: pick one`. `seed` (for `run.json` and step 6) = its absolute path; no `seed`: `seed = null`.
 - `budget <n>`: sets `budgets.states`, the crawl's state budget (default 60):
 
 ```js
@@ -72,7 +73,7 @@ Only judge kinds report a cost: a kind without `cost` (`smol`, `slow` and agent 
 Files of the run, all under the reports dir: `<stem>.data/` (every data file), `<stem>.media/` (screenshots), later `<stem>.json`, `<stem>.choice.json`, `<stem>.html`. Write `run.json` now:
 
 ```js
-await ax.writeRun(dataDir, { url, started: new Date().toISOString(), mode, since, budgets, features, viewport: { width: 1280, height: 800 } });
+await ax.writeRun(dataDir, { url, started: new Date().toISOString(), mode, since, seed, budgets, features, viewport: { width: 1280, height: 800 } });
 ```
 
 **Done when** `<stem>.data/run.json` exists with `url`, `started`, `mode`, `since`, `budgets` and `features` (every key of `rubric.json` `features`), and a non-null `since` names an existing previous `.data/` dir with `graph.json`.
@@ -189,7 +190,9 @@ Two things run in parallel per state. The cheap judge answers the rubric questio
 ## 6. Synthesise the object model, check synonyms and first-click scent
 
 ```js
-const m = await ap.synthesize({ completion }, { dataDir });
+const run = JSON.parse(await Bun.file(`${dataDir}/run.json`).text());
+const seed = run.seed ? ap.applySeed(Bun.YAML.parse(await Bun.file(run.seed).text())) : null;
+const m = await ap.synthesize({ completion }, { dataDir, seed });
 const y = await ap.synonyms({ judgeBatch }, { dataDir });
 const s = await ap.scent({ judgeBatch }, { dataDir });
 const sp = await ap.pathScent({ judgeBatch }, { dataDir });   // after scent; feature scent_path off: { skipped: true }
@@ -200,6 +203,8 @@ Objects whose `homes` hold no `graph.json` state and new tasks whose `target_sta
 
 With `since`, `synthesize` reads the previous `model.json` and `graph.json` from `run.json.since` itself: persona and object ids stay the same for the same things, every previous task is kept as it was (up to 2 new ones join it), and its `target_state` is not the model's pick but the state of this crawl that matches its previous target the way `diff.json` matches screens (state key, else route + kind + heading).
 A previous task without such a match gets `target_state: null` and `target_missing: true`, so step 8 walks it and it fails visibly. `model.json` `kept` = `{ids, missing}` (the previous task ids, and those without a target); `synthesize` returns the same `kept`.
+
+With `seed`, `applySeed` turns the app-model file into a brief: its `kind: object` terms (`{id, name, aliases, class}`) and its first 6 tasks (`persona: "p1"`). The model reuses a seed object's id and name when a screen shows the same thing, and every seed task stays in the model with its id and title: its `target_state` is the state the model picked, or `null` when no screen of the crawl does it (seed tasks are never dropped; analyze.py marks their title "target screen not found in this crawl"). At most 2 new tasks join them. `model.json` `seeded` = `{objects, tasks}` (the number of objects that kept a seed id, the seed task ids); `synthesize` returns the same `seeded`.
 
 `synonyms` lets the cheap judge check what the naming rule would otherwise take on the slow model's word: per candidate pair "do both labels name the same thing?" (rubric.json `synonyms`, gated like every bool). Candidates, capped at `synonyms.max_pairs`: each object's name against each of its `aliases`, object names that share a word, and object names the per-screen extraction used that are no model name or alias against the object names they share a word with.
 `<stem>.data/synonyms.json` lists the pairs with their `answer`; `analyze.py` keeps an alias only when the judge decided it names the same thing, adds a screen label judged the same, and merges two objects judged one thing into one naming finding.
@@ -213,7 +218,7 @@ An undecided pair (answer outside the gate) changes nothing and makes no finding
 - `scent` throws `judge unavailable`: one `app-explore-critic` agent reads `scent.questions.json` and its `image`, answers `first_click` per task in the judge choice shape into `<stem>.data/scent.agent.json`; count it with `cfg.recordAgent(dataDir, 'critic', { secs })`.
   Then `await ap.scent({ judgeBatch }, { dataDir, answers: JSON.parse(await Bun.file(`${dataDir}/scent.agent.json`).text()) })`.
 
-**Done when** `model.json` has ≥ 3 objects, each with a `homes` state in `graph.json`, every task's `target_state` exists in `graph.json` (with since: or is `null` with `target_missing`), `synonyms.json` exists, `scent.json` has one entry per task, `run.json.models` has `calls` for `perceive_judge`, `extract`, `synthesize`, `synonyms` (when it had pairs) and `scent` (when the judge answered), and each feature that is on met its step-6 criterion in its reference.
+**Done when** `model.json` has ≥ 3 objects, each with a `homes` state in `graph.json`, every task's `target_state` exists in `graph.json` (with since: or is `null` with `target_missing`; with seed: or is `null` for a seed task), with seed `model.json.seeded.tasks` lists every seed task id, `synonyms.json` exists, `scent.json` has one entry per task, `run.json.models` has `calls` for `perceive_judge`, `extract`, `synthesize`, `synonyms` (when it had pairs) and `scent` (when the judge answered), and each feature that is on met its step-6 criterion in its reference.
 
 **Feature `mental_model` on:** run step 6b of [references/mental-model.md](references/mental-model.md) now.
 

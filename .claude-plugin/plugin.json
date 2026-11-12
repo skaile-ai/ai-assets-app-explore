@@ -2,6 +2,10 @@
   "name": "app-explore",
   "description": "Explore a web app like a user and report its structure and visual clarity",
   "skills": [
-    "./app-explore/app-explore"
+    "./app-explore/app-explore",
+    "./app-explore/app-model",
+    "./app-explore/experience-app-objects",
+    "./app-explore/experience-app-guideline",
+    "./app-explore/experience-app-interview"
   ]
 }

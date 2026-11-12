@@ -231,7 +231,7 @@ function normaliseVariants(personas, n) {
   return short;
 }
 
-function synthPrompt(graph, perceived, lang, prev, variants = 0, P = null) {
+function synthPrompt(graph, perceived, lang, prev, variants = 0, P = null, seed = null) {
   const states = graph.states.map((s) => ({
     id: s.id, route: s.route, kind: s.kind, heading: s.heading, depth: s.depth,
     purpose: perceived[s.id]?.extract?.purpose ?? null,
@@ -250,7 +250,7 @@ Rules:
 ${variants ? variantRule(variants, P) : ''}- tasks: at most 6, ids t1…t6, favouring create, find and edit of core objects; persona = a persona id; object = an object id; target_state = the existing state id where the task is done (for create/edit: where its form opens).
 - Every state id you use must be one of the state ids below. Object ids: lowercase slugs.
 - Write names, goals and task titles in the app's UI language (${lang}).
-${prev ? `\nA previous run of this app produced the model below. Its state ids belong to the previous crawl and mean nothing here: take every state id from the states below. Keep its persona and object ids for the same things. Its tasks are kept as they are: do not list them again. Add at most 2 new tasks with the next free ids (the 6-task cap does not count the previous tasks). New things get new ids.\n${JSON.stringify(prev)}\n` : ''}
+${prev ? `\nA previous run of this app produced the model below. Its state ids belong to the previous crawl and mean nothing here: take every state id from the states below. Keep its persona and object ids for the same things. Its tasks are kept as they are: do not list them again. Add at most 2 new tasks with the next free ids (the 6-task cap does not count the previous tasks). New things get new ids.\n${JSON.stringify(prev)}\n` : ''}${seed ? `\nThe app's code or docs name these objects; use their id and name when a screen shows the same thing, list other UI words as aliases. Keep every seed task with its id and title; set its target_state to the state where it is done, or null. Add at most 2 new tasks with ids t1, t2.\n${JSON.stringify(seed)}\n` : ''}
 States (crawl order, depth = clicks from the start):
 ${JSON.stringify(states)}
 
@@ -278,6 +278,20 @@ function matchStates(prevStates, states) {
 }
 
 /**
+ * The synthesize brief from an app-model/1 file (`app-model.docs.yaml` or `.code.yaml`, parsed with `Bun.YAML.parse`):
+ * its `kind: object` terms as `{id, name, aliases, class}` and its first 6 tasks as `{id, title, persona: "p1",
+ * object, verb}`.
+ */
+export function applySeed(seed) {
+  return {
+    objects: (seed.terms ?? []).filter((t) => t.kind === 'object')
+      .map((t) => ({ id: t.id, name: t.label, aliases: t.aliases ?? [], class: t.class ?? null })),
+    tasks: (seed.tasks ?? []).slice(0, 6)
+      .map((t) => ({ id: t.id, title: t.title, persona: 'p1', object: t.term ?? null, verb: t.verb })),
+  };
+}
+
+/**
  * Synthesise personas, objects and tasks across all screens with the slow model. Writes <data>/model.json after
  * dropping objects without a `homes` state in graph.json and new tasks whose `target_state` is missing.
  * `prev` = a previous run's model.json (keeps ids stable); by default read from run.json `since` (the previous
@@ -288,8 +302,12 @@ function matchStates(prevStates, states) {
  * Feature `personas` n > 1: every persona also gets `variants` (n-1, rubric.json `personas`: `{id, name, literacy,
  * hurry, domain, note}`, id `<persona id>-v<k>`), the people of the kernel walks (walk.mjs `walkAll`); the result
  * then has `variants` (count) and `variants_short` (persona ids with fewer). n = 1: prompt and schema as without it.
+ * `seed` = `applySeed(<app-model file>)` (objects and up to 6 tasks the code or docs name; excludes `prev`): the model
+ * reuses the seed object ids and names, and every seed task stays in the model with its id and title, its
+ * `target_state` the state the model picked or `null` (seed tasks are never dropped), plus at most 2 new tasks.
+ * model.json `seeded` = `{objects, tasks}`: the number of model objects that kept a seed id, and the seed task ids.
  */
-export async function synthesize({ completion }, { dataDir, prev = undefined }) {
+export async function synthesize({ completion }, { dataDir, prev = undefined, seed = null }) {
   const t0 = Date.now();
   const { graph, rubric } = await load(dataDir);
   const mt = meter(dataDir, rubric);
@@ -297,6 +315,7 @@ export async function synthesize({ completion }, { dataDir, prev = undefined }) 
   let run = {};
   try { run = await readJson(join(dataDir, 'run.json')); } catch {}
   if (prev === undefined) prev = run.since ? await readJson(join(run.since, 'model.json')).catch(() => null) : null;
+  if (seed && prev) throw new Error('seed and since: pick one');
   const prevGraph = prev && run.since ? await readJson(join(run.since, 'graph.json')).catch(() => null) : null;
   const nv = Math.max(0, ((await features(dataDir)).personas ?? 1) - 1);
   const brief = prev && {
@@ -304,7 +323,7 @@ export async function synthesize({ completion }, { dataDir, prev = undefined }) 
     objects: prev.objects.map(({ id, name, aliases, class: cls }) => ({ id, name, aliases, class: cls })),
     tasks: prev.tasks.map(({ id, title, persona, object, verb }) => ({ id, title, persona, object, verb })),
   };
-  const r = await ask(mt, completion, 'synthesize', synthPrompt(graph, perceived, run.lang || 'en', brief, nv, rubric.personas),
+  const r = await ask(mt, completion, 'synthesize', synthPrompt(graph, perceived, run.lang || 'en', brief, nv, rubric.personas, seed),
     { schema: nv ? variantSchema(rubric.personas) : MODEL_SCHEMA });
   await mt.flush();
   if (r.error) throw new Error(`synthesize: ${r.error}`);
@@ -323,9 +342,23 @@ export async function synthesize({ completion }, { dataDir, prev = undefined }) 
   const objIds = new Set(m.objects.map((o) => o.id));
   for (const o of m.objects) o.relationships = o.relationships.filter((x) => objIds.has(x.to));
   const prevIds = new Set(prev ? prev.tasks.map((t) => t.id) : []);
-  const fresh = m.tasks.filter((t) => !prevIds.has(t.id));
+  const seedIds = new Set(seed ? seed.tasks.map((t) => t.id) : []);
+  const asked = m.tasks;
+  const fresh = asked.filter((t) => !prevIds.has(t.id) && !seedIds.has(t.id));
   const lost = fresh.filter((t) => !ids.has(t.target_state)).length;
   m.tasks = fresh.filter((t) => ids.has(t.target_state));
+  if (seed) {
+    const personaIds = new Set(m.personas.map((p) => p.id));
+    const picked = new Map(asked.filter((t) => seedIds.has(t.id)).map((t) => [t.id, t]));
+    const seeded = seed.tasks.map((s) => {
+      const t = picked.get(s.id);
+      return { ...s, persona: personaIds.has(t?.persona) ? t.persona : s.persona,
+        target_state: ids.has(t?.target_state) ? t.target_state : null };
+    });
+    const seedObjects = new Set(seed.objects.map((o) => o.id));
+    m.tasks = [...seeded, ...m.tasks.slice(0, 2)];
+    m.seeded = { objects: m.objects.filter((o) => seedObjects.has(o.id)).length, tasks: seeded.map((t) => t.id) };
+  }
   if (prev) {
     const now = prevGraph ? matchStates(prevGraph.states, graph.states) : {};
     const kept = prev.tasks.map(({ target_missing: _, ...p }) => {
@@ -341,6 +374,7 @@ export async function synthesize({ completion }, { dataDir, prev = undefined }) 
     ...(nv ? { variants: m.personas.reduce((a, p) => a + p.variants.length, 0), variants_short: short } : {}),
     dropped: { objects: before.objects - m.objects.length, tasks: lost },
     kept: m.kept ?? null,
+    seeded: m.seeded ?? null,
     ms: Date.now() - t0,
   };
 }

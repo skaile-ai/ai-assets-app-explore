@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skaile.ai/schema/app-model/1",
+  "title": "app-model/1",
+  "description": "One app's ontology (terms, relations, screens, navigation, tasks, features) taken from one source (code, docs, the running app) or merged from several. Vocabulary follows skaileup's _concept/ tree. See references/format.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "source", "app", "provenance", "terms", "relations", "screens", "navigation", "tasks", "featuresets", "features"],
+  "properties": {
+    "schema": { "const": "app-model/1" },
+    "source": { "enum": ["code", "docs", "app", "merged"] },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "root", "url"],
+      "properties": {
+        "name": { "type": "string" },
+        "root": { "type": ["string", "null"] },
+        "url": { "type": ["string", "null"] }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["made_by", "made_on", "source_sha", "inputs"],
+      "properties": {
+        "made_by": { "type": "string" },
+        "made_on": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "source_sha": { "type": "string" },
+        "inputs": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "terms": { "type": "array", "items": { "$ref": "#/$defs/term" } },
+    "relations": { "type": "array", "items": { "$ref": "#/$defs/relation" } },
+    "screens": { "type": "array", "items": { "$ref": "#/$defs/screen" } },
+    "navigation": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+    "tasks": { "type": "array", "items": { "$ref": "#/$defs/task" } },
+    "featuresets": { "type": "array", "items": { "$ref": "#/$defs/featureset" } },
+    "features": { "type": "array", "items": { "$ref": "#/$defs/feature" } }
+  },
+  "$defs": {
+    "slug": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+    "screen_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,47}$" },
+    "op": { "enum": ["create", "read", "edit", "delete", "archive"] },
+    "source": { "enum": ["code", "docs", "app"] },
+    "grade": { "enum": ["extracted", "inferred", "needs_review"] },
+    "seen_in": { "type": "array", "items": { "$ref": "#/$defs/source" } },
+    "ids": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "code": { "type": "string" }, "docs": { "type": "string" }, "app": { "type": "string" } }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref"],
+        "properties": { "ref": { "type": "string" } }
+      }
+    },
+    "axes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["navigation", "lifecycle", "origin", "operations"],
+      "properties": {
+        "navigation": { "enum": ["primary", "contextual", "none", null] },
+        "lifecycle": { "type": ["string", "null"], "pattern": "^(independent|link|owned-by:[a-z0-9]+(-[a-z0-9]+)*)$" },
+        "origin": { "enum": ["user", "system", "derived", null] },
+        "operations": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              { "$ref": "#/$defs/op" },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["op", "seen_in"],
+                "properties": { "op": { "$ref": "#/$defs/op" }, "seen_in": { "$ref": "#/$defs/seen_in" } }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "attribute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "home"],
+      "properties": {
+        "name": { "type": "string" },
+        "home": { "type": ["string", "null"] },
+        "seen_in": { "$ref": "#/$defs/seen_in" },
+        "ids": { "$ref": "#/$defs/ids" }
+      }
+    },
+    "term": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "aliases", "definition", "kind", "class", "attributes", "evidence", "grade"],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "label": { "type": "string" },
+        "aliases": { "type": "array", "items": { "type": "string" } },
+        "definition": { "type": ["string", "null"] },
+        "kind": { "enum": ["object", "role", "event", "state", "value", "concept"] },
+        "class": { "enum": ["core", "supporting", "child", "junction", "system", null] },
+        "axes": { "$ref": "#/$defs/axes" },
+        "attributes": { "type": "array", "items": { "$ref": "#/$defs/attribute" } },
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "grade": { "$ref": "#/$defs/grade" },
+        "seen_in": { "$ref": "#/$defs/seen_in" },
+        "ids": { "$ref": "#/$defs/ids" }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "predicate", "object", "evidence", "grade"],
+      "properties": {
+        "subject": { "$ref": "#/$defs/slug" },
+        "predicate": { "$ref": "#/$defs/slug" },
+        "object": { "$ref": "#/$defs/slug" },
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "grade": { "$ref": "#/$defs/grade" },
+        "seen_in": { "$ref": "#/$defs/seen_in" },
+        "ids": { "$ref": "#/$defs/ids" }
+      }
+    },
+    "screen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "route", "kind", "shows", "actions", "evidence", "grade"],
+      "properties": {
+        "id": { "$ref": "#/$defs/screen_id" },
+        "route": { "type": ["string", "null"] },
+        "kind": { "enum": ["page", "dialog", "menu", "tab", "drawer", "popover"] },
+        "shows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["term", "as"],
+            "properties": { "term": { "$ref": "#/$defs/slug" }, "as": { "enum": ["row", "card", "chip", "peek", "page"] } }
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["verb", "term", "target"],
+            "properties": {
+              "verb": { "type": "string" },
+              "term": { "type": ["string", "null"] },
+              "target": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "grade": { "$ref": "#/$defs/grade" },
+        "seen_in": { "$ref": "#/$defs/seen_in" },
+        "ids": { "$ref": "#/$defs/ids" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "label"],
+      "properties": {
+        "from": { "$ref": "#/$defs/screen_id" },
+        "to": { "$ref": "#/$defs/screen_id" },
+        "label": { "type": ["string", "null"] }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "role", "verb", "term", "screens", "evidence", "grade"],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "title": { "type": "string" },
+        "role": { "type": ["string", "null"] },
+        "verb": { "type": "string" },
+        "term": { "type": ["string", "null"] },
+        "screens": { "type": "array", "items": { "$ref": "#/$defs/screen_id" } },
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "grade": { "$ref": "#/$defs/grade" },
+        "seen_in": { "$ref": "#/$defs/seen_in" },
+        "ids": { "$ref": "#/$defs/ids" }
+      }
+    },
+    "featureset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "purpose"],
+      "properties": { "id": { "$ref": "#/$defs/slug" }, "purpose": { "type": "string" } }
+    },
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "featureset", "outcome", "terms", "ops", "screens", "tasks", "roles", "status", "evidence", "grade"],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "featureset": { "$ref": "#/$defs/slug" },
+        "outcome": { "type": ["string", "null"] },
+        "terms": { "type": "array", "items": { "$ref": "#/$defs/slug" } },
+        "ops": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["term", "op"],
+            "properties": { "term": { "$ref": "#/$defs/slug" }, "op": { "$ref": "#/$defs/op" } }
+          }
+        },
+        "screens": { "type": "array", "items": { "$ref": "#/$defs/screen_id" } },
+        "tasks": { "type": "array", "items": { "$ref": "#/$defs/slug" } },
+        "roles": { "type": "array", "items": { "$ref": "#/$defs/slug" } },
+        "status": { "enum": ["built", "hidden", "unbuilt", "undocumented", "ui-only", null] },
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "grade": { "$ref": "#/$defs/grade" }
+      }
+    }
+  }
+}
