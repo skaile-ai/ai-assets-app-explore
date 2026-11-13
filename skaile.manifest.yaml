@@ -20,7 +20,7 @@ assets:
   - kind: skill
     name: app-model
     root: app-explore/app-model
-    version: 0.1.0
+    version: 0.2.0
     dependencies:
       - "@skaile-ai/app-explore"
   - kind: skill

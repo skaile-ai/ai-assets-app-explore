@@ -199,6 +199,7 @@ def render(d):
     rest = gaps(m, docs)
     lines += [f'- {g}' for g in rest] or ['None.']
     (d / 'feature-map.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    am.catalogue(d)
     print(f'feature-map.md: {len(m["features"])} features; '
           + ', '.join(f'{s or "unknown"}={n}' for s, n in counts.items() if n) + f'; uncovered: {len(rest)}')
     return 0
@@ -236,18 +237,18 @@ def propose_ideas(m, r, date, rel):
     if not path.is_file():
         path.parent.mkdir(parents=True, exist_ok=True)
         lines = ['---', f'last_updated: {date}', '---', '', '# Featuresets', '', '## Ideas', '',
-                 '| idea | featureset | source | raised_by |', '|---|---|---|---|', *rows]
+                 '| idea | featureset | source | proposed_by |', '|---|---|---|---|', *rows]
     else:
         start = next((i for i, x in enumerate(lines) if x.strip().lower() == '## ideas'), None)
         if start is None:
             cut = next((i for i, x in enumerate(lines) if x.strip().lower() == '## cut'), len(lines))
-            block = ['## Ideas', '', '| idea | featureset | source | raised_by |', '|---|---|---|---|', *rows, '']
+            block = ['## Ideas', '', '| idea | featureset | source | proposed_by |', '|---|---|---|---|', *rows, '']
             lines[cut:cut] = block
         else:
             end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith('## ')), len(lines))
             last = max((i for i in range(start + 1, end) if lines[i].lstrip().startswith('|')), default=None)
             if last is None:
-                lines[start + 1:start + 1] = ['', '| idea | featureset | source | raised_by |', '|---|---|---|---|', *rows]
+                lines[start + 1:start + 1] = ['', '| idea | featureset | source | proposed_by |', '|---|---|---|---|', *rows]
             else:
                 lines[last + 1:last + 1] = rows
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
@@ -298,6 +299,7 @@ def propose(d, repo):
     elif terms:
         print(f'glossary in {"split" if mode else "undecided"} mode: run concept-glossary with {d}/proposals.md '
               f'({len(terms)} terms)')
+    am.catalogue(d)
     return 0
 
 

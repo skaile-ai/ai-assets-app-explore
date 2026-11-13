@@ -8,7 +8,7 @@ description: Build one ontology of an app (objects, roles, relations, screens,
   this app', 'which features are hidden or unbuilt'.
 license: MIT
 metadata:
-  version: 0.1.0
+  version: 0.2.0
   publisher: skaile-ai
   requires: "app-explore"
 ---
@@ -39,7 +39,7 @@ Without `uv`: use `PY=python3` when `python3 -c 'import yaml'` succeeds; otherwi
 ## 1. Inputs and sources
 
 - **Repo**: the argument, else `git rev-parse --show-toplevel` of the cwd, else none.
-- **Out dir**: `<repo>/_concept/02_grounding/findings/app-model/`; without a repo `~/.scratch/app-model/<host>/` (`<host>` of `url`). Create it.
+- **Out dir**: `<repo>/_concept/02_grounding/findings/app-model/`; without a repo `~/.scratch/app-model/<host>/` (`<host>` of `url`). Create it. In a skaileup tree this folder is the node `tree/02_grounding/findings/app-model/README.md` (owner `app-model`): `compare.py run`, `featuremap.py render` and `propose` give each file in it a row in `findings/index.md` with `step: app-model`, replacing that file's earlier row.
 - **Sources**: `from <list>` when given; otherwise `code` when there is a repo, `docs` when the repo has `README.md`, `docs/` or `_concept/`, `app` when `url` or `explore` is given.
 
 Extract the sources in parallel:

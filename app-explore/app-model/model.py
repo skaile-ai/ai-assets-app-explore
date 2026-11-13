@@ -89,6 +89,45 @@ def git_head(root):
     return r.stdout.strip() if r.returncode == 0 else 'none'
 
 
+def catalogue(out_dir):
+    """When out_dir is skaileup's `_concept/02_grounding/findings/app-model/`, give every file in it a row
+    `| app-model/<file> | <source> | <date> | app-model |` in `findings/index.md` (skaileup's findings
+    catalogue), replacing that file's earlier row and keeping every other row. Returns the rows written."""
+    d = Path(out_dir).resolve()
+    if d.name != 'app-model' or d.parent.name != 'findings' or d.parent.parent.name != '02_grounding':
+        return 0
+    date = datetime.date.today().isoformat()
+    rows = {}
+    for f in sorted(p for p in d.iterdir() if p.is_file() and not p.name.startswith('.')):
+        src = 'app-model.merged.yaml'
+        m = re.fullmatch(r'app-model\.(code|docs|app)\.yaml', f.name)
+        if m:
+            try:
+                ins = load(f)['provenance']['inputs'] or []
+            except Exception:
+                ins = []
+            src = ', '.join(ins[:3]) + (' …' if len(ins) > 3 else '') or m.group(1)
+        elif f.name == 'align.yaml':
+            src = 'term pairs decided in the run'
+        elif f.name == 'app-model.merged.yaml':
+            src = ', '.join(p.name for p in sorted(d.glob('app-model.*.yaml')) if p.name != f.name)
+        rows[f'app-model/{f.name}'] = f'| app-model/{f.name} | {src.replace("|", "/")} | {date} | app-model |'
+    index = d.parent / 'index.md'
+    if index.is_file():
+        lines = index.read_text(encoding='utf-8').splitlines()
+    else:
+        lines = ['---', f'last_updated: {date}', '---', '', '# Findings', '', '| file | source | date | step |', '|---|---|---|---|']
+    lines = [f'last_updated: {date}' if l.startswith('last_updated:') else l for l in lines]
+    kept = [l for l in lines if not any(l.startswith(f'| {k} |') for k in rows)]
+    at = max((i for i, l in enumerate(kept) if l.startswith('|')), default=len(kept) - 1) + 1
+    if not any(l.startswith('| file |') for l in kept):
+        kept[at:at] = ['', '| file | source | date | step |', '|---|---|---|---|']
+        at += 3
+    kept[at:at] = list(rows.values())
+    index.write_text('\n'.join(kept) + '\n', encoding='utf-8')
+    return len(rows)
+
+
 # ------------------------------------------------------------------ structure
 
 _PY_TYPE = {'string': str, 'boolean': bool, 'object': dict, 'array': list, 'null': type(None)}

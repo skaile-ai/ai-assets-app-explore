@@ -579,6 +579,7 @@ def run(d):
     merged = mg.merge()
     errors = am.validate(merged)
     am.save(Path(d) / 'app-model.merged.yaml', merged)
+    am.catalogue(d)
     if errors:
         print('app-model.merged.yaml does not validate:\n' + '\n'.join(errors))
         return 1
@@ -591,6 +592,7 @@ def run(d):
     (Path(d) / 'compare.yaml').write_text(
         yaml.safe_dump(cmp, sort_keys=False, allow_unicode=True, width=120, default_flow_style=False), encoding='utf-8')
     write_md(Path(d) / 'compare.md', merged, src, rows, undecided)
+    am.catalogue(d)
     by_rule = {}
     for r in rows:
         by_rule[r['rule']] = by_rule.get(r['rule'], 0) + 1
