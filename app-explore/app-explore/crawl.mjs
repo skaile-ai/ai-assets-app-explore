@@ -34,8 +34,14 @@ export function denied(label, mode = 'readonly', href = '') {
 // acting window: act(tab) stamps window.__apxActing before every crawler click or key press; a request within
 // ACT_MS of that stamp in the same document is acting. A navigation starts a new document, so its load is passive.
 //   passive: POST passes (logged as `passive`); PUT/PATCH/DELETE are rejected.
-//   acting:  every write is rejected except POSTs matching `allowPost`, GraphQL bodies without `mutation`, and
-//            tRPC calls whose procedures all start with a read verb (logged as `allow`, `graphql`, `trpc`).
+//   acting:  every write is rejected except POSTs matching `allowPost`, GraphQL bodies without `mutation`, tRPC
+//            calls whose procedures all start with a read verb, and calls of an action catalogue's queries
+//            (logged as `allow`, `graphql`, `trpc`, `action`).
+// Action catalogue (forge-app-actions and alike): every call is `POST <actionsRoute>/<id>`, query or effect, and
+// `GET <actionsRoute>` lists the actions with their `kind`. The guard reads that manifest once per document
+// (credentials included); a POST to a listed `kind: "query"` id passes, everything else under the route is a write.
+// Until the manifest has answered (or when the app has none) no action call passes in the acting window.
+export const ACTIONS_ROUTE = '/api/actions';
 
 const BLOCK_KEY = '__appExploreBlocked';
 const PASS_KEY = '__appExplorePassed';
@@ -44,12 +50,14 @@ const ACT_MS = 2000;
 // end: `getUser`, `list`, `is_admin` read; `issueRefund`, `checkout`, `cancel` do not.
 export const READ_VERB = /^(get|list|find|search|fetch|count|query|read|resolve|check|has|is|can)(?=[A-Z_\d]|$)/;
 
-function guardSource(allowPost) {
+function guardSource(allowPost, actionsRoute) {
   // Runs in the page before any app script (tab.addInitScript). Plain ES2017, no imports.
   return `(() => {
   if (window.__appExploreGuard) return;
   window.__appExploreGuard = true;
   const allow = ${JSON.stringify(allowPost)}.map((s) => new RegExp(s));
+  const ACTIONS = ${JSON.stringify(actionsRoute ? String(actionsRoute).replace(/\/+$/, '') : null)};
+  let queries = null;
   const READ = ${READ_VERB.toString()};
   const log = (key) => {
     let saved = [];
@@ -73,6 +81,10 @@ function guardSource(allowPost) {
     if (!m) return false;
     return decodeURIComponent(m[1]).split(',').every((p) => READ.test(p.split('.').pop()));
   };
+  const actionQuery = (u) => {
+    if (!ACTIONS || !queries || u.origin !== location.origin || !u.pathname.startsWith(ACTIONS + '/')) return false;
+    return queries.has(decodeURIComponent(u.pathname.slice(ACTIONS.length + 1)));
+  };
   const acting = () => typeof window.__apxActing === 'number' && Date.now() - window.__apxActing < ${ACT_MS};
   const allowed = (method, url, body) => {
     method = String(method || 'GET').toUpperCase();
@@ -83,7 +95,8 @@ function guardSource(allowPost) {
       const why = !isActing ? 'passive'
         : allow.some((r) => r.test(u.href)) ? 'allow'
         : graphqlQuery(body) ? 'graphql'
-        : trpcQuery(u) ? 'trpc' : null;
+        : trpcQuery(u) ? 'trpc'
+        : actionQuery(u) ? 'action' : null;
       if (why) { pass({ method, url: u.href, why }); return true; }
     }
     block({ method, url: u.href, acting: isActing });
@@ -91,6 +104,15 @@ function guardSource(allowPost) {
   };
   function SAFE(m) { m = String(m || 'GET').toUpperCase(); return m === 'GET' || m === 'HEAD' || m === 'OPTIONS'; }
   const realFetch = window.fetch;
+  if (ACTIONS) {
+    realFetch.call(window, ACTIONS, { credentials: 'same-origin', headers: { accept: 'application/json' } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        const list = j && Array.isArray(j.actions) ? j.actions : [];
+        queries = new Set(list.filter((a) => a && a.kind === 'query').map((a) => a.id));
+      })
+      .catch(() => {});
+  }
   window.fetch = async function (input, init) {
     const isReq = typeof Request !== 'undefined' && input instanceof Request;
     const method = (init && init.method) || (isReq ? input.method : 'GET');
@@ -134,18 +156,19 @@ export async function act(tab) {
 }
 
 /**
- * Install the write guard (rules above), replacing a guard installed earlier on this tab (to change `allowPost`).
+ * Install the write guard (rules above), replacing a guard installed earlier on this tab (to change `allowPost` or
+ * `actionsRoute`; `actionsRoute: null` turns the action catalogue rule off).
  * sandbox: no request guard (the click deny-list still keeps logout away). Reloads an already loaded page so the
  * guard is in place before the app's own scripts; on about:blank (openApp) there is nothing to reload.
  */
-export async function readOnly(tab, { mode = 'readonly', dataDir, allowPost = [] } = {}) {
+export async function readOnly(tab, { mode = 'readonly', dataDir, allowPost = [], actionsRoute = ACTIONS_ROUTE } = {}) {
   if (dataDir) {
     await mkdir(dataDir, { recursive: true });
     for (const f of ['blocked.jsonl', 'passive.jsonl', 'leaks.jsonl']) await appendFile(join(dataDir, f), '');
   }
   for (const s of await tab.initScripts()) if (String(s.source).includes('__appExploreGuard')) await tab.removeInitScript(s.id);
   if (mode !== 'readonly') return { mode, guard: false };
-  await tab.addInitScript(guardSource(allowPost));
+  await tab.addInitScript(guardSource(allowPost, actionsRoute));
   await tab.setDialogs('dismiss'); // "Really delete?" confirms answer no
   const url = await tab.url();
   if (url && !url.startsWith('about:')) { await tab.reload(); await quiet(tab, { render: RENDER_MS }); }
@@ -164,7 +187,7 @@ async function drainKey(tab, key) {
 
 /**
  * Move the page's guard logs to <data>/blocked.jsonl (rejected writes) and <data>/passive.jsonl (writes the guard let
- * through, `why`: passive|allow|graphql|trpc). Each row's `state` is the id of the state whose page produced it (null
+ * through, `why`: passive|allow|graphql|trpc|action). Each row's `state` is the id of the state whose page produced it (null
  * when unknown, e.g. in a walk), `task` the walk's task id (null in the crawl), `page` the URL the write was made on.
  * A blocked row's `why` says which rule rejected it: `acting` (any write inside the acting window that no read pass
  * let through, the page's own background writes included) or `method` (PUT/PATCH/DELETE outside it). The guard's own
@@ -334,7 +357,9 @@ export async function isLogin(tab) {
 }
 
 const VIEWPORT = { width: 1280, height: 800 };
-const MANAGED = { relay: false, tern: false };
+// browser.open takes `app` as one string: managed Chromium for every guarded tab (never the user's Chrome, never a
+// Tern picture-in-picture), the relay only to export the user's session (openApp).
+const MANAGED = 'chromium';
 
 async function settle(tab, url) {
   try { await tab.goto(url); } catch {}
@@ -347,10 +372,10 @@ async function settle(tab, url) {
  * then the URL loads and renders. Returns {tab, saved} (`saved`: auth.json was loaded). Every app tab of a run (the
  * crawl through openApp, each walk) opens through here.
  */
-export async function openGuarded(browser, { url, dataDir, mode = 'readonly', allowPost = [], name = 'explore', viewport = VIEWPORT, headed = false } = {}) {
+export async function openGuarded(browser, { url, dataDir, mode = 'readonly', allowPost = [], actionsRoute = ACTIONS_ROUTE, name = 'explore', viewport = VIEWPORT, headed = false } = {}) {
   await mkdir(dataDir, { recursive: true });
   const tab = await browser.open({ name, url: 'about:blank', app: MANAGED, viewport, persist: true, ...(headed ? { headed } : {}) });
-  await readOnly(tab, { mode, dataDir, allowPost });
+  await readOnly(tab, { mode, dataDir, allowPost, actionsRoute });
   const authPath = join(dataDir, 'auth.json');
   const saved = await access(authPath).then(() => true, () => false);
   if (saved) await tab.loadState(authPath);
@@ -381,13 +406,13 @@ export async function probeShot(tab, { ms = SHOT_PROBE_MS } = {}) {
  * Before it returns, probeShot() checks that the tab can take a screenshot, so a stalled display fails here, before
  * the crawl records any state.
  */
-export async function openApp(browser, { url, dataDir, mode = 'readonly', allowPost = [], name = 'explore', viewport = VIEWPORT } = {}) {
-  const opts = { url, dataDir, mode, allowPost, name, viewport };
+export async function openApp(browser, { url, dataDir, mode = 'readonly', allowPost = [], actionsRoute = ACTIONS_ROUTE, name = 'explore', viewport = VIEWPORT } = {}) {
+  const opts = { url, dataDir, mode, allowPost, actionsRoute, name, viewport };
   const authPath = join(dataDir, 'auth.json');
   let { tab, saved } = await openGuarded(browser, opts);
   let auth = saved ? 'saved' : 'none';
   if (await isLogin(tab)) {
-    const relay = await browser.open({ name: `${name}-auth`, url, app: { relay: true } });
+    const relay = await browser.open({ name: `${name}-auth`, url, app: 'relay' });
     try {
       await quiet(relay, { render: RENDER_MS });
       await relay.saveState(authPath);

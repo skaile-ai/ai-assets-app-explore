@@ -4,7 +4,7 @@ assets:
   - kind: skill
     name: app-explore
     root: app-explore/app-explore
-    version: 0.3.0
+    version: 0.3.1
     dependencies:
       - "@skaile-ai/report"
       - "agent:@skaile-ai/app-explore-walker"

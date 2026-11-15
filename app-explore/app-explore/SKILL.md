@@ -6,7 +6,7 @@ description: Explore a running web app like a user and report its perceived
   or re-running against a previous app-explore report.
 license: MIT
 metadata:
-  version: 0.3.0
+  version: 0.3.1
   publisher: skaile-ai
   requires: "report"
 ---
@@ -97,7 +97,8 @@ Before it returns, `openApp` takes one screenshot with a 15 s limit. When it thr
 ## 3. Write guard
 
 The guard is already in place from step 2. In readonly mode it is an init script over `fetch`, `XMLHttpRequest`, `sendBeacon` and form submits that also answers "really?" confirms with no. Readonly means the crawler's and walkers' own clicks never write; the page itself still POSTs while it loads, and those writes pass.
-Every crawler click or key press is preceded by `ax.act(tab)`, which opens a 2-second **acting** window in the current document: inside it every write is rejected except POSTs matching an `allowPost` regex string, GraphQL bodies without `mutation`, and tRPC calls whose procedures all start with a read verb followed by a camelCase capital, `_`, a digit or the name's end (`getUser`, `list`; not `issueRefund`, `checkout`); outside it (page loads, timers) POST passes and PUT, PATCH, DELETE are still rejected.
+Every crawler click or key press is preceded by `ax.act(tab)`, which opens a 2-second **acting** window in the current document: inside it every write is rejected except POSTs matching an `allowPost` regex string, GraphQL bodies without `mutation`, tRPC calls whose procedures all start with a read verb followed by a camelCase capital, `_`, a digit or the name's end (`getUser`, `list`; not `issueRefund`, `checkout`), and calls of an action catalogue's queries; outside it (page loads, timers) POST passes and PUT, PATCH, DELETE are still rejected.
+An action catalogue (forge-app-actions and alike) answers every call as `POST <actionsRoute>/<id>`, query or effect alike, and lists its actions with their `kind` at `GET <actionsRoute>` (default `/api/actions`). The guard reads that list once per document, with the page's credentials, and lets a POST to a `kind: "query"` id through (`why: action`); effects stay blocked, and until the list has answered (or when the app has none) every action call in the acting window is blocked. Another route: `openApp(browser, { …, actionsRoute: '/rpc/actions' })` (also `openGuarded`, `readOnly`); `actionsRoute: null` turns the rule off.
 `tab.route` cannot filter by method, so the guard lives in the page. The deny-list (`ax.denied`) matches whole words at a word start (`Save`, `Delete project`, `Cancel order`, `Approve`, `Ablehnen`, `Projekt löschen`; not `Saved items`, `Approvals`, `Absender`, a lone `Cancel`). `Launch`, `Run` and `Starten` stay allowed because they often only open a form; the guard stops their write, and the walkers treat them like save (step 8).
 
 A passing load-time POST is not harmless by definition: it can create or change data (an app that creates a default project on first visit does so under the guard too). The guard cannot tell a bootstrap write from a read-only POST; it records them in `passive.jsonl` (`why: passive`), and the user decides what they mean. So an empty `leaks.jsonl` never means the data is unchanged: in readonly mode the chat shows the user the distinct passive write procedures (`procs`, step 4) after the crawl and again after the walks (step 8).
@@ -108,7 +109,7 @@ When a screen breaks because a click needs a read-only POST the rules miss (a se
 await ax.readOnly(o.tab, { mode, dataDir, allowPost: ['/api/search'] });
 ```
 
-Rejections land in `<stem>.data/blocked.jsonl` (`why`: `acting` = any write inside an acting window that no read pass let through, `method` = PUT/PATCH/DELETE outside it, `selfcheck`), writes the guard let through in `passive.jsonl` (`why`: passive, allow, graphql, trpc), writes that reached the server without such a pass in `leaks.jsonl`.
+Rejections land in `<stem>.data/blocked.jsonl` (`why`: `acting` = any write inside an acting window that no read pass let through, `method` = PUT/PATCH/DELETE outside it, `selfcheck`), writes the guard let through in `passive.jsonl` (`why`: passive, allow, graphql, trpc, action), writes that reached the server without such a pass in `leaks.jsonl`.
 Each row has `method`, `url`, `state` (the id of the state whose page made the write; `null` before the first state and in walks), `task` (the walk's task id; `null` in the crawl) and `page` (the URL it was made on); `analyze.py` places a leak without `state` on the state whose url, path or route matches `page`. The crawl calls both functions after every state; a step that drives its own tab calls them the same way:
 
 ```js
